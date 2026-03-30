@@ -1,8 +1,10 @@
 # libflex
 
-C library for **FLEX** (Motorola) paging protocol encoding, decoding, and FSK modulation/demodulation. Generates and parses complete FLEX frame bitstreams with sync detection, BCH error correction (2-bit), block interleaving, multi-phase support, multi-speed operation (1600/3200/6400 bps), and Goertzel-based 2-FSK/4-FSK modem with WAV file I/O.
+C library for **FLEX** (Motorola) paging protocol encoding, decoding, and FSK modulation/demodulation. Generates and parses complete FLEX frame bitstreams with sync detection, BCH error correction (2-bit), block interleaving, multi-phase support, multi-speed operation (1600/3200/6400 bps), Goertzel-based 2-FSK/4-FSK modem with WAV file I/O, and NRZ baseband output compatible with multimon-ng.
 
 C99, no external dependencies beyond libc and libm. All structs are stack-allocatable with zero dynamic memory allocation. Thread-safe (no mutable global state).
+
+Cross-validated against [multimon-ng](https://github.com/EliasOenal/multimon-ng) -- encoded frames are decoded correctly by standard FLEX receivers.
 
 ## Table of Contents
 
@@ -12,6 +14,7 @@ C99, no external dependencies beyond libc and libm. All structs are stack-alloca
   - [Single Message Encoding](#single-message-encoding)
   - [Batch Encoding](#batch-encoding)
   - [Streaming Decoder](#streaming-decoder)
+  - [Baseband Output](#baseband-output)
   - [FSK Modem](#fsk-modem)
   - [BCH Error Correction](#bch-error-correction)
   - [Error Codes](#error-codes)
@@ -24,14 +27,15 @@ C99, no external dependencies beyond libc and libm. All structs are stack-alloca
 
 ## Features
 
-- **FLEX Encoder** -- Single or batch message encoding to complete FLEX frame bitstreams with sync fields, Frame Info Word, block interleaving, and multi-phase support at all four speeds
-- **FLEX Decoder** -- Streaming 5-state state-machine decoder with sync detection, speed auto-detection, callback-driven message delivery, and bit/byte/symbol input
+- **FLEX Encoder** -- Single or batch message encoding to complete FLEX frame bitstreams with preamble, inverted Sync1, dotting, LSB-first FIW, Sync2, block interleaving, message headers, and multi-phase support at all four speeds
+- **FLEX Decoder** -- Streaming 6-state state-machine decoder with inverted sync marker detection, speed auto-detection, LSB-first FIW decode, dotting skip, callback-driven message delivery, and bit/byte/symbol input
+- **Baseband Output** -- Built-in NRZ/4-level baseband sample generator (`flex_baseband`) with fixed-point timing matching multimon-ng's generator for direct FM transmitter feeding
 - **FSK Modem** -- Goertzel-based 2-FSK and 4-FSK modulator/demodulator with adaptive baseband frequencies, WAV file read/write, and support for 8/16/32/48 kHz sample rates
-- **BCH(31,21) Codec** -- Full encode, syndrome check, 1-bit and 2-bit error correction via precomputed compile-time syndrome table (528 entries, fully thread-safe)
-- **Block Interleaving** -- 32x8 matrix interleave/deinterleave for burst error protection; 16-bit burst errors fully correctable after deinterleaving
+- **BCH(31,21) Codec** -- Full encode, syndrome check, 1-bit and 2-bit error correction via precomputed compile-time syndrome table (528 entries, fully thread-safe). Returns correction count (0, 1, 2, or -1 for uncorrectable)
+- **Block Interleaving** -- 8x32 matrix interleave/deinterleave (LSB-first column order); 16-bit burst errors fully correctable after deinterleaving
 - **Multi-Speed** -- 1600 bps (2-FSK), 3200 bps (2-FSK or 4-FSK), 6400 bps (4-FSK) with automatic multi-phase encoding/decoding
 - **Numeric Messages** -- BCD encoding/decoding with digits 0-9 and special characters `*U -[]()`
-- **Alphanumeric Messages** -- 7-bit ASCII packing (3 characters per 21-bit codeword data field)
+- **Alphanumeric Messages** -- 7-bit ASCII packing (3 characters per 21-bit codeword data field) with 7-bit skip on first content word per FLEX spec
 - **Binary Messages** -- Arbitrary binary data with configurable bit width (1-16 bits per item)
 - **Tone-Only Pages** -- Address-only pages with no message data
 - **Zero Allocation** -- All encoder, decoder, modulator, and demodulator contexts are fixed-size structs, stack-allocatable with no malloc
@@ -42,14 +46,14 @@ C99, no external dependencies beyond libc and libm. All structs are stack-alloca
 | Parameter | Values |
 |-----------|--------|
 | Speeds | 1600/2, 3200/2, 3200/4, 6400/4 bps |
-| Phases | 1 (1600), 2 (3200), 4 (6400) |
-| Message types | Numeric, alphanumeric, binary, tone-only |
+| Phases | 1 (1600/2), 2 (3200/2, 3200/4), 4 (6400/4) |
+| Message types | Numeric, alphanumeric, binary, tone-only, secure |
 | Addresses | Short (single codeword) and long (two codewords) |
-| BCH correction | Up to 2-bit correction, 3+ bit detection |
-| Interleaving | 32x8 block interleave per block per phase |
+| BCH correction | 1-bit and 2-bit correction, 3+ bit detection |
+| Interleaving | 8x32 block interleave per block per phase (LSB-first) |
 | Messages per frame | Up to 32 queued |
 | Modem sample rates | 8000, 16000, 32000, 48000 Hz |
-| Modulation | 2-FSK (1600/3200 bps), 4-FSK (3200/6400 bps) |
+| Modulation | 2-FSK (1600/3200 baud), 4-FSK (1600/3200 baud) |
 
 ### Modem Sample Rate Support
 
@@ -81,6 +85,12 @@ dpkg-buildpackage -us -uc -b
 ```
 
 Produces `libflex0` (shared library), `libflex-dev` (headers + pkg-config), and `libflex0-dbgsym` (debug symbols).
+
+### CI
+
+GitHub Actions workflows are included:
+- **CI** (`ci.yml`): builds, tests, and packages on every push/PR to main
+- **Release** (`release.yml`): triggered on version tags (`v*`), builds `.deb` packages for amd64 and arm64 across Ubuntu 24.04, Debian 12, and Debian 13
 
 ## API
 
@@ -139,9 +149,6 @@ flex_encoder_add(&enc, 300000, FLEX_ADDR_SHORT,
 uint8_t buf[FLEX_BITSTREAM_MAX];
 size_t len, bits;
 flex_encode(&enc, buf, sizeof(buf), &len, &bits);
-
-/* Messages are packed into the address/vector/data fields of the frame.
- * Multiple messages share the same frame efficiently. */
 ```
 
 ### Streaming Decoder
@@ -175,17 +182,53 @@ printf("frames=%u codewords=%u corrected=%u errors=%u messages=%u\n",
 ```
 
 The decoder handles:
-- Sync marker detection (`0xA6C6AAAA`) from arbitrary bit positions
+- Inverted sync marker detection (`~0xA6C6AAAA`) from arbitrary bit positions
 - Speed auto-detection from 16-bit mode word (with Hamming distance tolerance)
-- FIW decode for cycle/frame metadata
+- 16-bit dotting skip between Sync1 and FIW
+- LSB-first FIW decode for cycle/frame metadata
+- Sync2 dotting skip at the correct symbol baud rate
 - BCH 2-bit error correction on every codeword
-- Block deinterleaving at all speeds
+- LSB-first block deinterleaving at all speeds
 - Multi-phase data separation (1/2/4 phases)
+- Message header parsing (fragment/continuation flags)
+- 7-bit alpha skip on first content word
 - Address/vector/message field reassembly after full frame decode
+- FLEX spec page type mapping (0=secure, 2=tone, 3/4/7=numeric, 5=alpha, 6=binary)
+
+### Baseband Output
+
+Generate NRZ/4-level baseband samples for direct FM transmitter feeding or multimon-ng compatibility:
+
+```c
+#include <libflex/modem.h>
+
+uint8_t buf[FLEX_BITSTREAM_MAX];
+size_t len, bits;
+
+/* Encode a message */
+flex_encode_single(100000, FLEX_ADDR_SHORT, FLEX_MSG_ALPHA,
+                   FLEX_SPEED_1600_2, "Hello", NULL, 0,
+                   buf, sizeof(buf), &len, &bits);
+
+/* Generate baseband samples */
+float samples[200000];
+size_t nsamples;
+flex_baseband(buf, bits, FLEX_SPEED_1600_2, 48000.0f,
+              samples, 200000, &nsamples);
+
+/* Write to WAV for multimon-ng: multimon-ng -t wav -a FLEX page.wav */
+flex_wav_write("page.wav", 48000.0f, samples, nsamples);
+```
+
+The baseband generator:
+- Handles baud rate transitions (1600 baud header, mode baud data)
+- Uses 16-bit fixed-point phase accumulation matching multimon-ng's timing
+- 2-FSK modes: bit 1 = +0.73, bit 0 = -0.73
+- 4-FSK modes: Gray-coded 4-level symbols (+-0.73, +-0.24)
 
 ### FSK Modem
 
-Modulate FLEX bitstreams to audio and demodulate back:
+Modulate FLEX bitstreams to FSK audio tones and demodulate back:
 
 ```c
 #include <libflex/modem.h>
@@ -234,13 +277,14 @@ The BCH(31,21) codec is exposed for direct codeword manipulation:
 ```c
 #include <libflex/bch.h>
 
-/* Build a valid 32-bit codeword from 21 data bits */
+/* Build a valid 32-bit codeword from 21 data bits (LSB layout) */
 uint32_t cw = flex_codeword_build(data21);
 
 /* Check a codeword (returns 0 if valid) */
 uint32_t syndrome = flex_bch_syndrome(cw);
 
-/* Attempt up to 2-bit error correction (returns 0 on success) */
+/* Attempt up to 2-bit error correction
+ * Returns: 0 = no errors, 1 = 1-bit corrected, 2 = 2-bit corrected, -1 = uncorrectable */
 int rc = flex_bch_correct(&cw);
 
 /* Verify even parity (returns 1 if valid) */
@@ -271,66 +315,61 @@ FLEX is Motorola's one-way digital paging protocol developed in the mid-1990s. I
 | Parameter | Value |
 |-----------|-------|
 | Data rates | 1600, 3200, 6400 bps |
-| Modulation | 2-FSK (1600, 3200) and 4-FSK (3200, 6400) |
-| Sync marker | `0xA6C6AAAA` (always at 1600 bps) |
-| Mode words | `0x870C` (1600/2), `0x7B18` (3200/2), `0xB068` (3200/4), `0xDEA0` (6400/4) |
+| Modulation | 2-FSK (1600/3200 baud) and 4-FSK (1600/3200 baud) |
+| Sync marker | `0xA6C6AAAA` (transmitted inverted, always at 1600 bps) |
+| Mode words | `0x870C` (1600/2), `0x7B18` (3200/2), `0xB068` (1600/4), `0xDEA0` (3200/4) |
 | Timing | 15 cycles/hour, 128 frames/cycle, 1.875s per frame |
-| Frame structure | Sync1 + FIW + Sync2 + 11 data blocks |
+| Frame structure | Preamble + Sync1 + dotting + FIW + Sync2 + 11 data blocks |
 | Block size | 8 interleaved codewords per phase |
-| Codeword | 32 bits: 21 data + 10 BCH + 1 parity |
+| Codeword | 32 bits: 21 data (LSB) + 10 BCH + 1 parity |
 | Error correction | BCH(31,21) with generator polynomial 0x769, corrects up to 2 bits |
-| Interleaving | 32x8 matrix, column-wise transmission |
+| Interleaving | 8x32 matrix, LSB-first column-wise transmission |
+| Page types | 0=secure, 2=tone, 3=standard numeric, 5=alphanumeric, 6=binary |
 
 ### Bitstream Structure
 
 ```
-[  Sync1: 16-bit bit sync + 32-bit marker + 16-bit mode word  ]  (64 bits, 1600 bps)
-[  FIW: 32-bit BCH-protected Frame Info Word                   ]  (32 bits, 1600 bps)
-[  Sync2: 32-bit sync marker                                   ]  (32 bits, data rate)
-[  Block 0: 8 interleaved codewords x nphases                  ]  (256-1024 bits)
-[  Block 1: ...                                                 ]
-[  ...                                                          ]
-[  Block 10: ...                                                ]
+[  Preamble: 960 alternating bits (0,1,0,1,...)             ]
+[  Sync1 (inverted): mode word + marker + ~mode word        ]  (64 bits, 1600 bps)
+[  Dotting: 16 alternating bits                              ]  (16 bits, 1600 bps)
+[  FIW: 32-bit BCH-protected Frame Info Word (LSB-first)     ]  (32 bits, 1600 bps)
+[  Sync2 dotting: alternating bits at symbol baud rate        ]  (25ms worth)
+[  Block 0: 8 interleaved codewords x nphases                ]  (256-1024 bits)
+[  Block 1: ...                                               ]
+[  ...                                                        ]
+[  Block 10: ...                                              ]
+[  Trailing idle: 64 alternating bits                         ]
 ```
-
-### Frame Size by Speed
-
-| Speed | Phases | Bits/Block | Total Frame Bits |
-|-------|--------|------------|-----------------|
-| 1600/2 | 1 | 256 | 2,944 |
-| 3200/2 | 2 | 512 | 5,760 |
-| 3200/4 | 2 | 512 | 5,760 |
-| 6400/4 | 4 | 1,024 | 11,392 |
 
 ### Data Block Layout (Phase A)
 
 ```
 Word 0:       BIW (Block Information Word)
 Words 1..Na:  Address codewords (short: 1 cw, long: 2 cw)
-Words Na..Nv: Vector codewords (1:1 with addresses, encode msg type/location/length)
-Words Nv..87: Message data codewords
-Unused:       Idle (all zeros, valid BCH)
+Words Na..Nv: Vector codewords (1:1 with addresses, encode page type/location/length)
+Words Nv..87: Message data (header word + content words per message)
+Unused:       Alternating idle patterns for PLL lock
 ```
 
-### Codeword Format
+### Codeword Format (LSB layout)
 
 ```
+All codewords (32 bits):
+  bits 0-20  = 21 data bits
+  bits 21-30 = BCH(31,21) parity (10 bits)
+  bit  31    = even parity
+
 Address codeword (short):
-  bits 31-11 = capcode + 32768 (21 data bits)
-  bits 10-1  = BCH(31,21) parity (10 bits)
-  bit  0     = even parity
+  data21 = capcode + 32768
 
 Vector codeword:
-  bits 20-14 = message word count (7 bits)
-  bits 13-7  = message start word index (7 bits)
-  bits 6-4   = message type (3 bits)
-  bits 3-0   = checksum (nibble sum = 0xF)
-  + BCH parity + even parity
+  bits 4-6   = page type (FLEX spec: 0=secure, 2=tone, 3=numeric, 5=alpha, 6=binary)
+  bits 7-13  = message start word index (0-127)
+  bits 14-20 = message word count (0-127)
 
-Data codeword:
-  bits 31-11 = 21 data bits
-  bits 10-1  = BCH(31,21) parity
-  bit  0     = even parity
+Message data:
+  word 0     = header (frag=3 for complete message)
+  words 1+   = content (alpha: 7-bit skip on first word, 3 chars per 21-bit word)
 ```
 
 ## Test Suite
@@ -340,69 +379,34 @@ $ make check
 
 libflex test suite
 
-BCH:
-  test_bch_build_verify                                   PASS
-  test_bch_build_verify_zero                              PASS
-  test_bch_build_verify_max                               PASS
-  test_bch_encode_zero                                    PASS
-  test_bch_correct_single                                 PASS
-  test_bch_correct_parity_bit                             PASS
-  test_bch_correct_double                                 PASS
-  test_bch_correct_double_adjacent                        PASS
-  test_bch_correct_double_extremes                        PASS
-  test_bch_detect_triple                                  PASS
-  test_bch_all_single_bits_correctable                    PASS
-  test_bch_all_double_bits_correctable                    PASS
-
-Interleave:
-  test_interleave_roundtrip                               PASS
-  test_interleave_known_pattern                           PASS
-  test_interleave_zeros                                   PASS
-  test_interleave_column_order                            PASS
-  test_deinterleave_bch_valid                             PASS
-  test_interleave_burst_correction                        PASS
-
-Sync:
-  test_sync_detect_1600_2                                 PASS
-  test_sync_detect_3200_2                                 PASS
-  test_sync_detect_3200_4                                 PASS
-  test_sync_detect_6400_4                                 PASS
-  test_sync_detect_fuzzy                                  PASS
-  test_sync_detect_fuzzy_3bit                             PASS
-  test_sync_detect_invalid                                PASS
-  test_sync_hamming                                       PASS
-  test_sync1_build                                        PASS
-  test_sync1_build_all_speeds                             PASS
-  test_sync2_build                                        PASS
-
-FIW:               7 tests   BIW: 6 tests   Numeric: 6 tests
-Alpha: 5 tests   Binary: 6 tests   Codeword: 10 tests   Phase: 7 tests
-
-Encoder:
-  14 tests -- all types, all speeds, sync/FIW/BIW/BCH validation
-
-Decoder:
-  12 tests -- all types at 1600/3200/6400, multi-message, stats, reset
-
-Roundtrip:
-  10 tests -- full encode-decode at all speeds, multi-message, edge cases
-
-Modem:
-  21 tests -- modulator, WAV I/O, Goertzel demod roundtrip at all
-  4 FLEX speeds x 4 sample rates (48k/32k/16k/8k)
+BCH:              12 tests -- encode, syndrome, 1/2-bit correction, 3-bit detection
+Interleave:        6 tests -- roundtrip, column order, burst error correction
+Sync:             11 tests -- speed detection (1600/2, 3200/2, 1600/4, 3200/4), fuzzy match
+FIW:               7 tests -- encode/decode roundtrip, BCH correction
+BIW:               6 tests -- encode/decode roundtrip, BCH correction
+Numeric:           6 tests -- BCD roundtrip, special chars, padding
+Alpha:             5 tests -- 7-bit ASCII roundtrip, chunk count
+Binary:            6 tests -- multi-width roundtrip (1/7/8/16 bit)
+Codeword:         10 tests -- short/long address, vector page types, data codewords
+Phase:             7 tests -- speed helpers, phase separation/combination
+Encoder:          14 tests -- all types, all speeds, sync/FIW/BIW/BCH validation
+Decoder:          12 tests -- all types at all speeds, multi-message, stats, reset
+Roundtrip:        10 tests -- full encode-decode at all speeds, multi-message, edge cases
+Modem:            19 tests -- modulator, WAV I/O, Goertzel demod roundtrip at
+                              4 FLEX speeds x 4 sample rates (48k/32k/16k/8k)
 
 131 passed, 0 failed
 ```
 
 Tests cover:
-- BCH(31,21) encode/syndrome/correct for all 32 bit positions, 2-bit correction, 3-bit detection
-- 32x8 block interleave/deinterleave round-trips with burst error correction verification
+- BCH(31,21) encode/syndrome/correct for all 31 bit positions, 2-bit correction, 3-bit detection
+- 8x32 block interleave/deinterleave round-trips with burst error correction verification
 - Sync marker detection at all 4 speeds with Hamming-distance fuzzy matching
 - FIW and BIW encode/decode round-trips with BCH error correction
 - Numeric BCD, 7-bit alpha, and binary encoding/decoding round-trips
-- Short/long address and vector codeword construction with field verification
+- Short/long address, vector page type mapping, and data codeword construction
 - Multi-phase separation and combination
-- Encoder output validation: sync position, FIW cycle/frame, BIW field boundaries, BCH validity on all 88 codewords
+- Encoder output validation: inverted sync position, LSB-first FIW, BIW field boundaries, BCH validity on all 88 codewords
 - Streaming decoder at all 4 speeds with multi-message, statistics, and reset
 - Full encode-then-decode round-trips for numeric, alpha, binary, and tone at all speeds
 - FSK modulator/demodulator round-trip through audio at 48/32/16/8 kHz sample rates
@@ -414,8 +418,9 @@ Tests cover:
 |---------|-------------|
 | `encode_page` | Encode a pager message, write raw FLEX frame bitstream to stdout |
 | `decode_stream` | Read raw FLEX bitstream from stdin, print decoded messages |
-| `encode_wav` | Encode a pager message to a WAV audio file |
+| `encode_wav` | Encode a pager message to a WAV audio file (FSK tones) |
 | `decode_wav` | Decode a FLEX WAV audio file back to messages |
+| `gen_baseband` | Generate NRZ baseband WAV files for multimon-ng testing |
 | `gen_samples` | Generate sample WAV files for all type/speed/rate combinations |
 
 ```bash
@@ -425,9 +430,6 @@ Tests cover:
 # Encode an alpha page at 6400 bps
 ./encode_page 2000 a 6400 "Hello FLEX" > page.bin
 
-# Encode a tone-only page
-./encode_page 500 t > page.bin
-
 # Decode a raw bitstream
 ./decode_stream < page.bin
 # [NUM] capcode=1234 cycle=0 frame=0 speed=1600 msg="5551234"
@@ -435,20 +437,16 @@ Tests cover:
 # Pipe encode directly to decode
 ./encode_page 1234 n "5551234" | ./decode_stream
 
-# Encode to WAV audio file
+# Encode to WAV audio file (FSK tones)
 ./encode_wav 1234 n "5551234" -o page.wav
-# wrote page.wav: 88320 samples (1.84 sec) at 48000 Hz, 1600 bps
 
 # Decode from WAV audio file
 ./decode_wav page.wav
 # [NUM] capcode=1234 cycle=0 frame=0 speed=1600 msg="5551234"
 
-# Encode at 6400 bps to WAV
-./encode_wav 2000 a 6400 "Fast FLEX!" -o fast.wav
-
-# Decode 6400 bps WAV
-./decode_wav fast.wav 6400
-# [ALPHA] capcode=2000 cycle=0 frame=0 speed=6400 msg="Fast FLEX!"
+# Generate NRZ baseband for multimon-ng
+./gen_baseband 1234 n "5551234" 48000 page_baseband.wav
+# Decode with: multimon-ng -t wav -a FLEX page_baseband.wav
 
 # Generate all sample WAV files (48 files across all speeds/rates/types)
 ./gen_samples samples/
@@ -458,6 +456,9 @@ Tests cover:
 
 ```
 libflex/
+  .github/workflows/
+    ci.yml              CI build + test on push/PR
+    release.yml         Multi-arch .deb release on version tags
   include/libflex/
     flex.h              Umbrella header (includes all public headers)
     version.h           Version constants (0.1.0)
@@ -468,46 +469,31 @@ libflex/
     fiw.h               Frame Info Word encode/decode (cycle, frame, repeat)
     biw.h               Block Information Word encode/decode (field boundaries)
     encoder.h           Frame encoder API (single + batch, all speeds)
-    decoder.h           Streaming decoder API with callback (5-state machine)
-    modem.h             FSK modulator, Goertzel demodulator, WAV I/O
+    decoder.h           Streaming decoder API with callback (6-state machine)
+    modem.h             FSK modulator, Goertzel demodulator, baseband, WAV I/O
   src/
-    flex_internal.h     Private types, bitstream reader/writer, internal prototypes
+    flex_internal.h     Private types, bitstream reader/writer (MSB + LSB), prototypes
     error.c             Error string table
     bch.c               BCH(31,21) codec with precomputed 528-entry syndrome table
-    sync.c              Sync1/Sync2 pattern tables, Hamming-distance speed detection
+    sync.c              Sync1 (mode|marker|~mode), Hamming-distance speed detection
     fiw.c               Frame Info Word codec with nibble checksum
-    biw.c               Block Information Word codec with nibble checksum
-    codeword.c          Short/long address, vector, data codeword construction
-    interleave.c        32x8 block interleave/deinterleave
+    biw.c               Block Information Word codec
+    codeword.c          Short/long address, vector (with page type mapping), data cws
+    interleave.c        8x32 block interleave/deinterleave (LSB-first)
     numeric.c           BCD numeric encode/decode (5 digits per 20-bit chunk)
     alpha.c             7-bit alphanumeric pack/unpack (3 chars per 21-bit word)
     binary.c            Binary message encode/decode (configurable bit width)
     phase.c             Multi-phase separation/combination, speed helpers
-    encoder.c           Multi-speed frame encoder with address/vector/data packing
-    decoder.c           Streaming 5-state decoder with frame-level reassembly
-    modem.c             Goertzel FSK modem + WAV file I/O
-  tests/
-    test.h              Test harness macros (ASSERT, RUN_TEST, etc.)
-    test_main.c         Test runner (131 tests across 14 test files)
-    test_bch.c          BCH encode/syndrome/correct tests (12 tests)
-    test_interleave.c   Block interleave round-trip + burst correction (6 tests)
-    test_sync.c         Sync detection + speed identification (11 tests)
-    test_fiw.c          FIW encode/decode round-trips (7 tests)
-    test_biw.c          BIW encode/decode round-trips (6 tests)
-    test_numeric.c      BCD numeric round-trips (6 tests)
-    test_alpha.c        Alpha encoding round-trips (5 tests)
-    test_binary.c       Binary encoding round-trips (6 tests)
-    test_codeword.c     Codeword construction tests (10 tests)
-    test_phase.c        Phase separation tests (7 tests)
-    test_encoder.c      Encoder output validation (14 tests)
-    test_decoder.c      Streaming decoder tests (12 tests)
-    test_roundtrip.c    Full encode-decode round-trips (10 tests)
-    test_modem.c        FSK modem round-trips at all speeds/rates (19 tests)
+    encoder.c           Multi-speed frame encoder with preamble, inverted sync, headers
+    decoder.c           Streaming 6-state decoder with frame-level reassembly
+    modem.c             Goertzel FSK modem + baseband generator + WAV file I/O
+  tests/                131 tests across 14 test files
   examples/
     encode_page.c       Encode a page to raw bitstream on stdout
     decode_stream.c     Decode raw bitstream from stdin
-    encode_wav.c        Encode a page to WAV audio file
+    encode_wav.c        Encode a page to WAV audio file (FSK tones)
     decode_wav.c        Decode WAV audio file to messages
+    gen_baseband.c      Generate NRZ/4-level baseband WAVs for multimon-ng
     gen_samples.c       Generate sample WAVs for all combinations
   samples/              48 pre-generated WAV files (all types x speeds x rates)
   debian/               Debian packaging files
@@ -521,42 +507,48 @@ libflex/
 
 ### BCH(31,21) Error Correcting Code
 
-The FLEX BCH code uses generator polynomial g(x) = x^10 + x^9 + x^8 + x^6 + x^5 + x^3 + 1 (0x769), the same polynomial as POCSAG. It protects the 31-bit field (bits 31-1) and can:
-- Correct any 1-bit error via syndrome lookup
-- Correct any 2-bit error via precomputed syndrome table (528 entries mapping all C(32,2) error patterns)
-- Detect 3+ bit errors (returns uncorrectable)
+The FLEX BCH code uses generator polynomial g(x) = x^10 + x^9 + x^8 + x^6 + x^5 + x^3 + 1 (0x769), the same polynomial as POCSAG. Codeword layout: data in bits 0-20 (LSB), BCH parity in bits 21-30, even parity in bit 31. It can:
+- Correct any 1-bit error (returns 1)
+- Correct any 2-bit error via precomputed syndrome table (returns 2)
+- Detect 3+ bit errors (returns -1, uncorrectable)
 
-The syndrome table is `static const` (computed at compile time), making the BCH module fully thread-safe with no initialization required.
+The syndrome table is `static const` (528 entries computed at compile time), making the BCH module fully thread-safe with no initialization required.
 
 ### Block Interleaving
 
-FLEX uses 32x8 bit matrix interleaving within each data block:
+FLEX uses 8x32 bit matrix interleaving within each data block:
 1. 8 codewords (32 bits each) arranged as rows
-2. Transmitted column-by-column (bit 31 of all codewords first, then bit 30, etc.)
+2. Transmitted column-by-column, LSB first (bit 0 of all codewords, then bit 1, etc.)
 3. Spreads burst errors across multiple codewords
 
 A burst error of up to 16 consecutive bits in the interleaved stream results in at most 2 errors per codeword after deinterleaving, which is fully correctable by BCH.
 
 ### Encoder
 
-The encoder generates a complete FLEX frame:
-1. **Sync1**: 16-bit alternating bit sync + 32-bit sync marker + 16-bit mode word (64 bits at 1600 bps)
-2. **FIW**: BCH-protected Frame Info Word with cycle/frame number (32 bits)
-3. **Sync2**: Sync marker at data rate (32 bits)
-4. **Data Blocks**: 11 blocks of 8 interleaved codewords per phase
+The encoder generates a complete FLEX frame matching the protocol specification:
+1. **Preamble**: 960 alternating bits for receiver PLL clock recovery
+2. **Sync1** (inverted): mode word (A) + sync marker (B) + ~mode word (C), all bit-inverted
+3. **Dotting**: 16 alternating bits between Sync1 and FIW
+4. **FIW**: BCH-protected Frame Info Word with cycle/frame number, transmitted LSB-first
+5. **Sync2**: Alternating dotting bits at the symbol baud rate (25ms)
+6. **Data Blocks**: 11 blocks of 8 interleaved codewords per phase
+7. **Trailing idle**: 64 alternating bits for receiver decode trigger
 
-Frame data layout (Phase A): BIW + addresses + vectors + message data + idle fill. Other phases are idle. Each block is interleaved independently.
+Frame data layout (Phase A): BIW + addresses + vectors + message data (header + content words). Other phases carry alternating idle patterns for PLL lock. Each block is interleaved independently.
+
+Alpha messages use a 7-bit skip on the first content word (frag=3 convention). Vector codewords use FLEX spec page type values (ALPHA=5, NUMERIC=3, TONE=2, BINARY=6).
 
 ### Decoder
 
-The streaming decoder is a 5-state machine:
-1. **HUNTING**: Shifts bits into a 32-bit register, checks for sync marker
-2. **SYNC1**: Reads 16-bit mode word, detects speed (with Hamming tolerance)
-3. **FIW**: Reads and BCH-corrects the Frame Info Word
-4. **SYNC2**: Reads and validates sync marker at data rate
-5. **BLOCK**: Accumulates 11 blocks, deinterleaves, BCH-corrects per phase
+The streaming decoder is a 6-state machine:
+1. **HUNTING**: Shifts bits into a 32-bit register, checks for inverted sync marker (`~0xA6C6AAAA`)
+2. **SYNC1**: Reads 16-bit mode word (C-word), detects speed (with Hamming tolerance)
+3. **DOTTING1**: Skips 16 bits of dotting between Sync1 and FIW
+4. **FIW**: Reads 32-bit FIW codeword LSB-first, BCH-corrects, extracts cycle/frame
+5. **SYNC2**: Skips Sync2 dotting bits (duration = symbol_baud * 25ms)
+6. **BLOCK**: Accumulates 11 blocks, deinterleaves (LSB-first), BCH-corrects per phase
 
-After all 11 blocks: parses BIW for field boundaries, decodes addresses and vectors, extracts and decodes message data, fires callback for each complete message. Returns to HUNTING.
+After all 11 blocks: parses BIW for field boundaries, decodes addresses (with page type reverse mapping), skips message headers, applies 7-bit alpha shift, extracts and decodes message content, fires callback for each complete message. Returns to HUNTING.
 
 ### FSK Modem
 
@@ -571,6 +563,14 @@ The demodulator uses the **Goertzel algorithm** for efficient tone detection:
 - One Goertzel iteration per sample (2 multiplies + 1 add per tone)
 - Power comparison at symbol boundaries determines bit/symbol values
 - No FFT needed -- Goertzel is O(N) per tone vs O(N log N) for full FFT
+
+### Baseband Generator
+
+`flex_baseband()` produces NRZ/4-level samples suitable for feeding an FM transmitter or for direct decoding by multimon-ng:
+- Uses 16-bit fixed-point phase accumulation matching multimon-ng's `gen_flex.c` timing
+- Handles baud rate transition from 1600 baud (header) to mode baud (data) mid-frame
+- 2-FSK: +0.73/-0.73 levels; 4-FSK: Gray-coded +/-0.73 and +/-0.24 levels
+- Compatible with `multimon-ng -t wav -a FLEX`
 
 ## License
 
