@@ -18,12 +18,21 @@ static int get_bit(const uint8_t *buf, size_t bit_idx)
 	return (buf[bit_idx / 8] >> (7 - (bit_idx % 8))) & 1;
 }
 
-/* helper: extract 32-bit codeword starting at bit offset */
+/* helper: extract 32-bit codeword starting at bit offset (MSB-first) */
 static uint32_t get_codeword(const uint8_t *buf, size_t bit_offset)
 {
 	uint32_t cw = 0;
 	for (int i = 0; i < 32; i++)
 		cw |= ((uint32_t)get_bit(buf, bit_offset + (size_t)i) << (31 - i));
+	return cw;
+}
+
+/* helper: extract 32-bit codeword starting at bit offset (LSB-first) */
+static uint32_t get_codeword_lsb(const uint8_t *buf, size_t bit_offset)
+{
+	uint32_t cw = 0;
+	for (int i = 0; i < 32; i++)
+		cw |= ((uint32_t)get_bit(buf, bit_offset + (size_t)i) << i);
 	return cw;
 }
 
@@ -94,10 +103,11 @@ static void test_encoder_sync_present(void)
 	                   FLEX_SPEED_1600_2, "12345", NULL, 0,
 	                   buf, sizeof(buf), &len, &bits);
 
-	/* Sync1: 16-bit bit sync (0xAAAA) + 32-bit marker + 16-bit mode word
-	 * The sync marker 0xA6C6AAAA should be at bit offset 16 */
-	uint32_t marker = get_codeword(buf, 16);
-	ASSERT_EQ_U32(marker, FLEX_SYNC_MARKER);
+	/* Sync1 is inverted: 960-bit preamble + 16-bit inverted bit sync +
+	 * 32-bit inverted marker. The inverted sync marker ~0xA6C6AAAA
+	 * should be at bit offset 960 + 16 = 976 */
+	uint32_t marker = get_codeword(buf, 976);
+	ASSERT_EQ_U32(marker, ~FLEX_SYNC_MARKER);
 }
 
 static void test_encoder_fiw_valid(void)
@@ -112,8 +122,8 @@ static void test_encoder_fiw_valid(void)
 	size_t len = 0, bits = 0;
 	ASSERT_EQ_INT(flex_encode(&enc, buf, sizeof(buf), &len, &bits), FLEX_OK);
 
-	/* FIW is at bit offset 64 (after 64-bit Sync1) */
-	uint32_t fiw_cw = get_codeword(buf, 64);
+	/* FIW is at bit offset 960 + 64 + 16 = 1040, LSB-first */
+	uint32_t fiw_cw = get_codeword_lsb(buf, 1040);
 	ASSERT_EQ_U32(flex_bch_syndrome(fiw_cw), 0);
 
 	flex_fiw_t fiw;
@@ -131,11 +141,12 @@ static void test_encoder_biw_valid(void)
 	                   FLEX_SPEED_1600_2, "12345", NULL, 0,
 	                   buf, sizeof(buf), &len, &bits);
 
-	/* Data starts after Sync1(64) + FIW(32) + Sync2(32) = 128 bits.
+	/* Data starts after preamble(960) + Sync1(64) + dotting(16) + FIW(32)
+	 * + sync2_dotting(40) = 1112 bits for 1600/2.
 	 * First block: 256 interleaved bits. Deinterleave to get codewords. */
 	uint8_t block_bits[256];
 	for (int i = 0; i < 256; i++)
-		block_bits[i] = get_bit(buf, 128 + (size_t)i);
+		block_bits[i] = get_bit(buf, 1112 + (size_t)i);
 
 	uint32_t cws[8];
 	int ncw = 0;
@@ -165,7 +176,7 @@ static void test_encoder_all_codewords_valid(void)
 	for (int blk = 0; blk < 11; blk++) {
 		uint8_t block_bits[256];
 		for (int i = 0; i < 256; i++)
-			block_bits[i] = get_bit(buf, 128 + (size_t)(blk * 256 + i));
+			block_bits[i] = get_bit(buf, 1112 + (size_t)(blk * 256 + i));
 
 		uint32_t cws[8];
 		int ncw = 0;
@@ -209,9 +220,10 @@ static void test_encoder_expected_size(void)
 	                   FLEX_SPEED_1600_2, "12345", NULL, 0,
 	                   buf, sizeof(buf), &len, &bits);
 
-	/* Expected: Sync1(64) + FIW(32) + Sync2(32) + 11 blocks * 256 bits
-	 * = 64 + 32 + 32 + 2816 = 2944 bits */
-	ASSERT_EQ_INT((int)bits, 2944);
+	/* Expected: preamble(960) + Sync1(64) + dotting(16) + FIW(32)
+	 * + sync2_dotting(40) + 11 blocks * 256 bits
+	 * = 960 + 64 + 16 + 32 + 40 + 2816 = 3928 bits */
+	ASSERT_EQ_INT((int)bits, 3992);
 }
 
 static void test_encoder_long_address(void)
@@ -237,8 +249,9 @@ static void test_encoder_3200_2_size(void)
 	                   FLEX_SPEED_3200_2, "12345", NULL, 0,
 	                   buf, sizeof(buf), &len, &bits);
 
-	/* 2 phases: Sync1(64) + FIW(32) + Sync2(32) + 11 * 512 = 5760 */
-	ASSERT_EQ_INT((int)bits, 5760);
+	/* 2 phases: preamble(960) + Sync1(64) + dotting(16) + FIW(32)
+	 * + sync2_dotting(80) + 11 * 512 = 960+64+16+32+80+5632 = 6784 */
+	ASSERT_EQ_INT((int)bits, 6848);
 }
 
 static void test_encoder_3200_4_size(void)
@@ -250,8 +263,9 @@ static void test_encoder_3200_4_size(void)
 	                   FLEX_SPEED_3200_4, "Test", NULL, 0,
 	                   buf, sizeof(buf), &len, &bits);
 
-	/* 2 phases: same as 3200/2 in bit count */
-	ASSERT_EQ_INT((int)bits, 5760);
+	/* 2 phases at 1600 symbol baud: preamble(960) + Sync1(64) + dotting(16)
+	 * + FIW(32) + sync2(40) + 11*512 = 6744 */
+	ASSERT_EQ_INT((int)bits, 6808);
 }
 
 static void test_encoder_6400_4_size(void)
@@ -263,8 +277,9 @@ static void test_encoder_6400_4_size(void)
 	                   FLEX_SPEED_6400_4, "Test", NULL, 0,
 	                   buf, sizeof(buf), &len, &bits);
 
-	/* 4 phases: Sync1(64) + FIW(32) + Sync2(32) + 11 * 1024 = 11392 */
-	ASSERT_EQ_INT((int)bits, 11392);
+	/* 4 phases at 3200 symbol baud: preamble(960) + Sync1(64) + dotting(16)
+	 * + FIW(32) + sync2(80) + 11*1024 = 12416 */
+	ASSERT_EQ_INT((int)bits, 12480);
 }
 
 void test_encoder(void)

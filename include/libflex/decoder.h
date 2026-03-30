@@ -12,11 +12,12 @@ extern "C" {
 typedef void (*flex_msg_cb_t)(const flex_msg_t *msg, void *user);
 
 typedef enum {
-	FLEX_DEC_HUNTING = 0,
-	FLEX_DEC_SYNC1  = 1,
-	FLEX_DEC_FIW    = 2,
-	FLEX_DEC_SYNC2  = 3,
-	FLEX_DEC_BLOCK  = 4
+	FLEX_DEC_HUNTING  = 0,
+	FLEX_DEC_SYNC1    = 1,
+	FLEX_DEC_DOTTING1 = 2,
+	FLEX_DEC_FIW      = 3,
+	FLEX_DEC_SYNC2    = 4,
+	FLEX_DEC_BLOCK    = 5
 } flex_dec_state_t;
 
 #define FLEX_DEC_MAX_CW_FRAME  (FLEX_CWS_PER_BLOCK * FLEX_BLOCKS_PER_FRAME)
@@ -40,6 +41,9 @@ typedef struct {
 
 	/* FIW */
 	flex_fiw_t          fiw;
+
+	/* Dotting/sync2 skip counter */
+	int                 skip_bits;
 
 	/* Block processing */
 	int                 block_index;

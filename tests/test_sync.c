@@ -17,17 +17,17 @@ static void test_sync_detect_3200_2(void)
 	ASSERT_EQ_INT(speed, FLEX_SPEED_3200_2);
 }
 
+static void test_sync_detect_1600_4(void)
+{
+	flex_speed_t speed;
+	ASSERT_EQ_INT(flex_sync_detect_speed(FLEX_MODE_1600_4, &speed), FLEX_OK);
+	ASSERT_EQ_INT(speed, FLEX_SPEED_3200_4);
+}
+
 static void test_sync_detect_3200_4(void)
 {
 	flex_speed_t speed;
 	ASSERT_EQ_INT(flex_sync_detect_speed(FLEX_MODE_3200_4, &speed), FLEX_OK);
-	ASSERT_EQ_INT(speed, FLEX_SPEED_3200_4);
-}
-
-static void test_sync_detect_6400_4(void)
-{
-	flex_speed_t speed;
-	ASSERT_EQ_INT(flex_sync_detect_speed(FLEX_MODE_6400_4, &speed), FLEX_OK);
 	ASSERT_EQ_INT(speed, FLEX_SPEED_6400_4);
 }
 
@@ -44,7 +44,7 @@ static void test_sync_detect_fuzzy_3bit(void)
 {
 	/* flip 3 bits -- should still match (within tolerance) */
 	flex_speed_t speed;
-	uint16_t corrupted = FLEX_MODE_6400_4 ^ 0x0007;
+	uint16_t corrupted = FLEX_MODE_3200_4 ^ 0x0007;
 	ASSERT_EQ_INT(flex_sync_detect_speed(corrupted, &speed), FLEX_OK);
 	ASSERT_EQ_INT(speed, FLEX_SPEED_6400_4);
 }
@@ -101,8 +101,8 @@ void test_sync(void)
 	printf("Sync:\n");
 	RUN_TEST(test_sync_detect_1600_2);
 	RUN_TEST(test_sync_detect_3200_2);
+	RUN_TEST(test_sync_detect_1600_4);
 	RUN_TEST(test_sync_detect_3200_4);
-	RUN_TEST(test_sync_detect_6400_4);
 	RUN_TEST(test_sync_detect_fuzzy);
 	RUN_TEST(test_sync_detect_fuzzy_3bit);
 	RUN_TEST(test_sync_detect_invalid);

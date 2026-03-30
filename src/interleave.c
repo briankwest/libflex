@@ -2,14 +2,14 @@
 
 /*
  * FLEX block interleaving: 8 codewords (32 bits each) arranged as an
- * 8-row x 32-column matrix.  Transmitted column-by-column (MSB column first).
+ * 8-row x 32-column matrix.  Transmitted column-by-column (LSB column first).
  *
  * Interleave (encoder): codewords in, bit stream out.
- *   Bit order: col 0 (bit 31) of cw[0..7], then col 1 (bit 30), ..., col 31 (bit 0).
+ *   Bit order: col 0 (bit 0) of cw[0..7], then col 1 (bit 1), ..., col 31 (bit 31).
  *
  * Deinterleave (decoder): bit stream in, codewords out.
  *   Received bit n:  row = n % ncw,  col = n / ncw
- *   Maps to: cw[row] bit (31 - col)
+ *   Maps to: cw[row] bit col
  */
 
 void flex_interleave(const uint32_t *cws_in, int ncw,
@@ -25,7 +25,7 @@ void flex_interleave(const uint32_t *cws_in, int ncw,
 
 	for (int col = 0; col < 32; col++) {
 		for (int row = 0; row < ncw; row++) {
-			bits_out[idx++] = (cws_in[row] >> (31 - col)) & 1;
+			bits_out[idx++] = (cws_in[row] >> col) & 1;
 		}
 	}
 
@@ -54,7 +54,7 @@ void flex_deinterleave(const uint8_t *bits_in, int nbits,
 		if (col >= 32)
 			break;
 		if (bits_in[i])
-			cws_out[row] |= (1u << (31 - col));
+			cws_out[row] |= (1u << col);
 	}
 
 	*ncw_out = ncw;

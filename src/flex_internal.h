@@ -14,6 +14,7 @@ uint32_t flex_cw_long_addr1(uint32_t capcode);
 uint32_t flex_cw_long_addr2(uint32_t capcode);
 uint32_t flex_cw_vector(flex_msg_type_t type, uint16_t start_word,
                         uint16_t msg_words, int fragment);
+flex_msg_type_t flex_page_type_to_msg_type(int page_type);
 uint32_t flex_cw_data(uint32_t data21);
 
 /* ---- Numeric BCD encode/decode ---- */
@@ -93,6 +94,15 @@ static inline int bs_write_bit(flex_bs_t *bs, int bit)
 static inline int bs_write_codeword(flex_bs_t *bs, uint32_t cw)
 {
 	for (int i = 31; i >= 0; i--) {
+		if (bs_write_bit(bs, (cw >> i) & 1) < 0)
+			return -1;
+	}
+	return 0;
+}
+
+static inline int bs_write_codeword_lsb(flex_bs_t *bs, uint32_t cw)
+{
+	for (int i = 0; i < 32; i++) {
 		if (bs_write_bit(bs, (cw >> i) & 1) < 0)
 			return -1;
 	}

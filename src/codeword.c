@@ -58,9 +58,37 @@ uint32_t flex_cw_long_addr2(uint32_t capcode)
 }
 
 /*
+ * Map library message type to FLEX spec page type (vector bits 4-6).
+ * These values must match the spec / multimon-ng's Flex_PageTypeEnum.
+ */
+static int msg_type_to_page_type(flex_msg_type_t type)
+{
+	switch (type) {
+	case FLEX_MSG_SECURE:    return 0;
+	case FLEX_MSG_TONE_ONLY: return 2;
+	case FLEX_MSG_NUMERIC:   return 3;
+	case FLEX_MSG_ALPHA:     return 5;
+	case FLEX_MSG_BINARY:    return 6;
+	default:                 return 5;
+	}
+}
+
+flex_msg_type_t flex_page_type_to_msg_type(int page_type)
+{
+	switch (page_type) {
+	case 0:  return FLEX_MSG_SECURE;
+	case 2:  return FLEX_MSG_TONE_ONLY;
+	case 3: case 4: case 7:
+	         return FLEX_MSG_NUMERIC;
+	case 5:  return FLEX_MSG_ALPHA;
+	case 6:  return FLEX_MSG_BINARY;
+	default: return FLEX_MSG_ALPHA;
+	}
+}
+
+/*
  * Vector codeword:
- *   bits 0-3:  checksum (nibble sum = 0xF)
- *   bits 4-6:  message type (0-7)
+ *   bits 4-6:  page type (FLEX spec value)
  *   bits 7-13: message start word index (0-127)
  *   bits 14-20: message word count (0-127)
  */
@@ -69,20 +97,12 @@ uint32_t flex_cw_vector(flex_msg_type_t type, uint16_t start_word,
 {
 	(void)fragment;
 
+	int page_type = msg_type_to_page_type(type);
+
 	uint32_t data21 = 0;
-	data21 |= ((uint32_t)(type & 0x7)) << 4;
+	data21 |= ((uint32_t)(page_type & 0x7)) << 4;
 	data21 |= ((uint32_t)(start_word & 0x7F)) << 7;
 	data21 |= ((uint32_t)(msg_words & 0x7F)) << 14;
-
-	/* compute checksum: nibble sum = 0xF */
-	unsigned int sum = 0;
-	sum += (data21 >> 4) & 0xF;
-	sum += (data21 >> 8) & 0xF;
-	sum += (data21 >> 12) & 0xF;
-	sum += (data21 >> 16) & 0xF;
-	sum += (data21 >> 20) & 0x1;
-	uint32_t checksum = (0xF - sum) & 0xF;
-	data21 = (data21 & ~(uint32_t)0xF) | checksum;
 
 	return flex_codeword_build(data21);
 }

@@ -68,6 +68,38 @@ typedef struct {
 	int      data_count;
 } msg_data_t;
 
+/*
+ * Encode alpha message with 7-bit skip on first content word.
+ *
+ * When frag=3 (complete message), the multimon-ng decoder skips
+ * the first character position (7 bits) of the first content word.
+ * We pack with bits 0-6 of word 0 empty so the message starts at bit 7.
+ */
+static int encode_alpha_skip7(const char *text, size_t len,
+                              uint32_t *chunks, int max_chunks)
+{
+	if (!text || !chunks || max_chunks < 1)
+		return -1;
+
+	int idx = 0;
+	int bpos = 7;  /* skip first 7 bits */
+	uint32_t cur = 0;
+
+	for (size_t i = 0; i < len && idx < max_chunks; i++) {
+		uint32_t ch = (uint32_t)((uint8_t)text[i] & 0x7F);
+		cur |= ch << bpos;
+		bpos += 7;
+		if (bpos >= 21) {
+			chunks[idx++] = cur & 0x1FFFFFu;
+			cur = ch >> (7 - (bpos - 21));
+			bpos -= 21;
+		}
+	}
+	if (bpos > 0 && idx < max_chunks)
+		chunks[idx++] = cur & 0x1FFFFFu;
+	return idx;
+}
+
 static int encode_message_data(const flex_msg_t *msg, msg_data_t *md)
 {
 	md->data_count = 0;
@@ -80,7 +112,9 @@ static int encode_message_data(const flex_msg_t *msg, msg_data_t *md)
 
 	switch (msg->type) {
 	case FLEX_MSG_ALPHA:
-		nchunks = flex_alpha_encode(msg->text, msg->text_len, chunks, 40);
+		/* skip first 7 bits for frag=3 complete message */
+		nchunks = encode_alpha_skip7(msg->text, msg->text_len,
+		                             chunks, 40);
 		break;
 	case FLEX_MSG_NUMERIC:
 		nchunks = flex_numeric_encode(msg->text, msg->text_len, chunks, 40);
@@ -149,9 +183,13 @@ flex_err_t flex_encode(const flex_encoder_t *enc,
 	}
 
 	/* --- Step 3: build per-phase frame data --- */
-	/* phase A gets all messages; other phases are idle (zero = valid BCH) */
+	/* fill all phases with alternating idle patterns that provide
+	 * signal transitions for the receiver's PLL timing recovery */
 	uint32_t phase_frame[FLEX_MAX_PHASES][FRAME_WORDS];
-	memset(phase_frame, 0, sizeof(phase_frame));
+	for (int p = 0; p < FLEX_MAX_PHASES; p++)
+		for (int w = 0; w < FRAME_WORDS; w++)
+			phase_frame[p][w] = flex_codeword_build(
+				(w % 2 == 0) ? 0x0AAAAAAAAu : 0x155555u);
 
 	/* lay out phase A */
 	int addr_start = 1;
@@ -163,13 +201,17 @@ flex_err_t flex_encode(const flex_encoder_t *enc,
 	for (int i = 0; i < nmsg; i++) {
 		const flex_msg_t *m = &enc->messages[i];
 		int msg_start_word = cursor;
-		int msg_word_count = msg_data[i].data_count;
+		int msg_word_count = msg_data[i].data_count + 1; /* +1 for header */
 
 		vect_cws[i] = flex_cw_vector(m->type,
 		                             (uint16_t)msg_start_word,
 		                             (uint16_t)msg_word_count, 0);
 
-		for (int j = 0; j < msg_word_count && cursor < FRAME_WORDS; j++)
+		/* message header: frag=3 (complete), cont=0 */
+		if (cursor < FRAME_WORDS)
+			phase_frame[0][cursor++] = flex_cw_data(3u << 11);
+
+		for (int j = 0; j < msg_data[i].data_count && cursor < FRAME_WORDS; j++)
 			phase_frame[0][cursor++] = msg_data[i].data_cws[j];
 	}
 
@@ -191,7 +233,13 @@ flex_err_t flex_encode(const flex_encoder_t *enc,
 	flex_bs_t bs;
 	bs_init(&bs, out, out_cap);
 
-	/* Sync1: 64 bits at 1600 bps */
+	/* Preamble: 960 alternating bits (0,1,0,1,...) */
+	for (int i = 0; i < 960; i++) {
+		if (bs_write_bit(&bs, i & 1) < 0)
+			return FLEX_ERR_OVERFLOW;
+	}
+
+	/* Sync1: 64 bits at 1600 bps, INVERTED */
 	{
 		uint8_t sync1_buf[16];
 		size_t sync1_bits = 0;
@@ -201,21 +249,40 @@ flex_err_t flex_encode(const flex_encoder_t *enc,
 			return err;
 		for (size_t i = 0; i < sync1_bits; i++) {
 			int bit = (sync1_buf[i / 8] >> (7 - (int)(i % 8))) & 1;
-			if (bs_write_bit(&bs, bit) < 0)
+			if (bs_write_bit(&bs, !bit) < 0)
 				return FLEX_ERR_OVERFLOW;
 		}
 	}
 
-	/* FIW: 32 bits at 1600 bps */
-	{
-		flex_fiw_t fiw = { .cycle = enc->cycle, .frame = enc->frame, .repeat = 0 };
-		if (bs_write_codeword(&bs, flex_fiw_encode(&fiw)) < 0)
+	/* Dotting: 16 bits alternating (0,1,0,1,...) */
+	for (int i = 0; i < 16; i++) {
+		if (bs_write_bit(&bs, i & 1) < 0)
 			return FLEX_ERR_OVERFLOW;
 	}
 
-	/* Sync2: 32 bits at data rate */
-	if (bs_write_codeword(&bs, FLEX_SYNC_MARKER) < 0)
-		return FLEX_ERR_OVERFLOW;
+	/* FIW: 32 bits at 1600 bps, LSB-first */
+	{
+		flex_fiw_t fiw = { .cycle = enc->cycle, .frame = enc->frame, .repeat = 0 };
+		if (bs_write_codeword_lsb(&bs, flex_fiw_encode(&fiw)) < 0)
+			return FLEX_ERR_OVERFLOW;
+	}
+
+	/* Sync2 dotting: symbol_rate * 25 / 1000 bits alternating */
+	{
+		int symbol_baud;
+		switch (enc->speed) {
+		case FLEX_SPEED_1600_2:
+		case FLEX_SPEED_3200_4:  symbol_baud = 1600; break;
+		case FLEX_SPEED_3200_2:
+		case FLEX_SPEED_6400_4:  symbol_baud = 3200; break;
+		default:                 symbol_baud = 1600; break;
+		}
+		int sync2_bits = symbol_baud * 25 / 1000;
+		for (int i = 0; i < sync2_bits; i++) {
+			if (bs_write_bit(&bs, i & 1) < 0)
+				return FLEX_ERR_OVERFLOW;
+		}
+	}
 
 	/* Data blocks: 11 blocks, each with nphases × 8 interleaved codewords */
 	for (int blk = 0; blk < FLEX_BLOCKS_PER_FRAME; blk++) {
@@ -262,6 +329,13 @@ flex_err_t flex_encode(const flex_encoder_t *enc,
 					return FLEX_ERR_OVERFLOW;
 			}
 		}
+	}
+
+	/* Trailing idle: 64 alternating bits to give the receiver time
+	 * to detect idle and trigger frame decode. */
+	for (int i = 0; i < 64; i++) {
+		if (bs_write_bit(&bs, i & 1) < 0)
+			break;  /* not critical if buffer is tight */
 	}
 
 	*out_bits = bs.total_bits;

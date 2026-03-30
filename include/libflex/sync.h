@@ -13,10 +13,10 @@ extern "C" {
 #define FLEX_SYNC_MARKER  0xA6C6AAAAu
 
 /* 16-bit mode words that follow the sync marker (identify speed) */
-#define FLEX_MODE_1600_2  0x870Cu    /* 1600 bps, 2-level FSK */
-#define FLEX_MODE_3200_2  0x7B18u    /* 3200 bps, 2-level FSK */
-#define FLEX_MODE_3200_4  0xB068u    /* 3200 bps, 4-level FSK */
-#define FLEX_MODE_6400_4  0xDEA0u    /* 6400 bps, 4-level FSK */
+#define FLEX_MODE_1600_2  0x870Cu    /* 1600 baud, 2-level FSK, 1 phase  */
+#define FLEX_MODE_1600_4  0xB068u    /* 1600 baud, 4-level FSK, 2 phases */
+#define FLEX_MODE_3200_2  0x7B18u    /* 3200 baud, 2-level FSK, 2 phases */
+#define FLEX_MODE_3200_4  0xDEA0u    /* 3200 baud, 4-level FSK, 4 phases */
 
 /* Identify speed from the 16-bit mode word following the sync marker */
 flex_err_t flex_sync_detect_speed(uint16_t mode_word, flex_speed_t *speed);

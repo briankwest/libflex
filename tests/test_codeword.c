@@ -3,6 +3,7 @@
 #include <libflex/types.h>
 
 extern uint32_t flex_cw_short_addr(uint32_t capcode);
+extern flex_msg_type_t flex_page_type_to_msg_type(int page_type);
 extern uint32_t flex_cw_long_addr1(uint32_t capcode);
 extern uint32_t flex_cw_long_addr2(uint32_t capcode);
 extern uint32_t flex_cw_vector(flex_msg_type_t type, uint16_t start_word,
@@ -27,7 +28,7 @@ static void test_cw_short_addr_decode(void)
 {
 	uint32_t capcode = 100000;
 	uint32_t cw = flex_cw_short_addr(capcode);
-	uint32_t data21 = cw >> 11;
+	uint32_t data21 = cw & 0x1FFFFFu;
 	/* capcode = data21 - 32768 */
 	ASSERT_EQ_U32(data21 - 32768, capcode);
 }
@@ -46,7 +47,7 @@ static void test_cw_long_addr_range(void)
 {
 	/* word1 should be in long-address-trigger range (< 0x008001) */
 	uint32_t cw1 = flex_cw_long_addr1(5000000);
-	uint32_t data21 = cw1 >> 11;
+	uint32_t data21 = cw1 & 0x1FFFFFu;
 	ASSERT(data21 < 0x008001u);
 }
 
@@ -60,31 +61,37 @@ static void test_cw_vector_bch(void)
 static void test_cw_vector_fields(void)
 {
 	uint32_t cw = flex_cw_vector(FLEX_MSG_NUMERIC, 20, 3, 0);
-	uint32_t data21 = cw >> 11;
+	uint32_t data21 = cw & 0x1FFFFFu;
 
-	uint32_t type = (data21 >> 4) & 0x7;
+	/* FLEX spec page type 3 = standard numeric */
+	uint32_t page_type = (data21 >> 4) & 0x7;
 	uint32_t start = (data21 >> 7) & 0x7F;
 	uint32_t count = (data21 >> 14) & 0x7F;
 
-	ASSERT_EQ_U32(type, FLEX_MSG_NUMERIC);
+	ASSERT_EQ_U32(page_type, 3);
 	ASSERT_EQ_U32(start, 20);
 	ASSERT_EQ_U32(count, 3);
+	/* reverse mapping back to library type */
+	ASSERT_EQ_U32(flex_page_type_to_msg_type(page_type), FLEX_MSG_NUMERIC);
 }
 
-static void test_cw_vector_checksum(void)
+static void test_cw_vector_page_types(void)
 {
-	uint32_t cw = flex_cw_vector(FLEX_MSG_BINARY, 50, 10, 0);
-	uint32_t data21 = cw >> 11;
+	/* verify all message types map to correct FLEX spec page types */
+	uint32_t cw;
+	uint32_t pt;
 
-	/* verify nibble checksum = 0xF */
-	unsigned int sum = 0;
-	sum += (data21)       & 0xF;
-	sum += (data21 >> 4)  & 0xF;
-	sum += (data21 >> 8)  & 0xF;
-	sum += (data21 >> 12) & 0xF;
-	sum += (data21 >> 16) & 0xF;
-	sum += (data21 >> 20) & 0x1;
-	ASSERT_EQ_U32(sum & 0xF, 0xF);
+	cw = flex_cw_vector(FLEX_MSG_ALPHA, 1, 1, 0);
+	pt = (cw & 0x1FFFFFu) >> 4 & 0x7;
+	ASSERT_EQ_U32(pt, 5);   /* alphanumeric */
+
+	cw = flex_cw_vector(FLEX_MSG_TONE_ONLY, 1, 1, 0);
+	pt = (cw & 0x1FFFFFu) >> 4 & 0x7;
+	ASSERT_EQ_U32(pt, 2);   /* tone */
+
+	cw = flex_cw_vector(FLEX_MSG_BINARY, 1, 1, 0);
+	pt = (cw & 0x1FFFFFu) >> 4 & 0x7;
+	ASSERT_EQ_U32(pt, 6);   /* binary */
 }
 
 static void test_cw_data_bch(void)
@@ -98,7 +105,7 @@ static void test_cw_data_roundtrip(void)
 {
 	uint32_t data = 0x0F0F0F;
 	uint32_t cw = flex_cw_data(data);
-	uint32_t extracted = cw >> 11;
+	uint32_t extracted = cw & 0x1FFFFFu;
 	ASSERT_EQ_U32(extracted, data);
 }
 
@@ -112,7 +119,7 @@ void test_codeword(void)
 	RUN_TEST(test_cw_long_addr_range);
 	RUN_TEST(test_cw_vector_bch);
 	RUN_TEST(test_cw_vector_fields);
-	RUN_TEST(test_cw_vector_checksum);
+	RUN_TEST(test_cw_vector_page_types);
 	RUN_TEST(test_cw_data_bch);
 	RUN_TEST(test_cw_data_roundtrip);
 	printf("\n");

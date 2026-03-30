@@ -29,7 +29,7 @@ void flex_decoder_reset(flex_decoder_t *dec)
  */
 static uint32_t decode_short_addr(uint32_t cw)
 {
-	uint32_t data21 = cw >> 11;
+	uint32_t data21 = cw & 0x1FFFFFu;
 	if (data21 < 32768u)
 		return 0;  /* out of short address range */
 	return data21 - 32768u;
@@ -91,8 +91,8 @@ static void deliver_messages(flex_decoder_t *dec)
 			continue;
 		}
 
-		uint32_t vdata = vect_cw >> 11;
-		flex_msg_type_t type = (vdata >> 4) & 0x7;
+		uint32_t vdata = vect_cw & 0x1FFFFFu;
+		flex_msg_type_t type = flex_page_type_to_msg_type((vdata >> 4) & 0x7);
 		int msg_start = (vdata >> 7) & 0x7F;
 		int msg_words = (vdata >> 14) & 0x7F;
 
@@ -108,24 +108,36 @@ static void deliver_messages(flex_decoder_t *dec)
 		msg.frame = dec->fiw.frame;
 
 		if (msg_words > 0 && msg_start < frame_count) {
-			/* collect data chunks from message words */
+			/* first word is the message header (frag/cont) — skip it */
+			int content_start = msg_start + 1;
+			int content_count = msg_words - 1;
+
+			/* collect data chunks from content words */
 			uint32_t chunks[88];
 			int nchunks = 0;
 
-			for (int w = 0; w < msg_words && (msg_start + w) < frame_count
+			for (int w = 0; w < content_count
+			     && (content_start + w) < frame_count
 			     && nchunks < 88; w++) {
-				uint32_t dcw = frame[msg_start + w];
+				uint32_t dcw = frame[content_start + w];
 				if (flex_bch_correct(&dcw) < 0) {
 					dec->stat_errors++;
 					continue;
 				}
-				chunks[nchunks++] = dcw >> 11;  /* 21 data bits */
+				chunks[nchunks++] = dcw & 0x1FFFFFu;
 			}
 
 			/* decode based on type */
 			int ret;
 			switch (type) {
 			case FLEX_MSG_ALPHA:
+				/* first content word has 7-bit skip (frag=3) —
+				 * shift entire bitstream left by 7 across chunks */
+				for (int c = 0; c < nchunks - 1; c++)
+					chunks[c] = ((chunks[c] >> 7) |
+					             (chunks[c+1] << 14)) & 0x1FFFFFu;
+				if (nchunks > 0)
+					chunks[nchunks-1] = (chunks[nchunks-1] >> 7) & 0x1FFFFFu;
 				ret = flex_alpha_decode(
 					chunks, nchunks, msg.text, FLEX_MSG_MAX);
 				msg.text_len = ret >= 0 ? (size_t)ret : 0;
@@ -199,8 +211,8 @@ static void process_block(flex_decoder_t *dec)
 			uint32_t cw = cws[w];
 			uint32_t syn = flex_bch_syndrome(cw);
 
-			if (syn != 0 || !flex_parity_check(cw)) {
-				if (flex_bch_correct(&cw) == 0) {
+			if (syn != 0) {
+				if (flex_bch_correct(&cw) >= 0) {
 					dec->stat_corrected++;
 				} else {
 					dec->stat_errors++;
@@ -223,9 +235,9 @@ static void process_bit(flex_decoder_t *dec, int bit)
 	switch (dec->state) {
 
 	case FLEX_DEC_HUNTING:
-		/* shift bit into 32-bit register, look for sync marker */
+		/* shift bit into 32-bit register, look for inverted sync marker */
 		dec->shift_reg = (dec->shift_reg << 1) | (bit & 1);
-		if (dec->shift_reg == FLEX_SYNC_MARKER) {
+		if (dec->shift_reg == ~FLEX_SYNC_MARKER) {
 			dec->state = FLEX_DEC_SYNC1;
 			dec->cw_accum = 0;
 			dec->cw_bits = 0;
@@ -233,14 +245,18 @@ static void process_bit(flex_decoder_t *dec, int bit)
 		break;
 
 	case FLEX_DEC_SYNC1:
-		/* accumulate 16-bit mode word */
+		/* accumulate 16-bit C-word (inverted complement of mode).
+		 * Sync1 = mode|marker|~mode, transmitted inverted:
+		 * ~mode|~marker|mode.  After finding ~marker, next 16 bits
+		 * are mode directly (double inversion cancels). */
 		dec->cw_accum = (dec->cw_accum << 1) | (bit & 1);
 		dec->cw_bits++;
 		if (dec->cw_bits == 16) {
+			uint16_t mode_word = (uint16_t)(dec->cw_accum & 0xFFFF);
 			flex_speed_t speed;
-			if (flex_sync_detect_speed((uint16_t)dec->cw_accum, &speed) == FLEX_OK) {
+			if (flex_sync_detect_speed(mode_word, &speed) == FLEX_OK) {
 				dec->speed = speed;
-				dec->state = FLEX_DEC_FIW;
+				dec->state = FLEX_DEC_DOTTING1;
 				dec->cw_accum = 0;
 				dec->cw_bits = 0;
 			} else {
@@ -250,9 +266,20 @@ static void process_bit(flex_decoder_t *dec, int bit)
 		}
 		break;
 
+	case FLEX_DEC_DOTTING1:
+		/* skip 16 bits of dotting between Sync1 and FIW */
+		dec->cw_bits++;
+		if (dec->cw_bits == 16) {
+			dec->state = FLEX_DEC_FIW;
+			dec->cw_accum = 0;
+			dec->cw_bits = 0;
+		}
+		break;
+
 	case FLEX_DEC_FIW:
-		/* accumulate 32-bit FIW codeword */
-		dec->cw_accum = (dec->cw_accum << 1) | (bit & 1);
+		/* accumulate 32-bit FIW codeword (LSB-first: first bit received = bit 0) */
+		if (bit & 1)
+			dec->cw_accum |= (1u << dec->cw_bits);
 		dec->cw_bits++;
 		if (dec->cw_bits == 32) {
 			flex_fiw_t fiw;
@@ -261,6 +288,17 @@ static void process_bit(flex_decoder_t *dec, int bit)
 				dec->state = FLEX_DEC_SYNC2;
 				dec->cw_accum = 0;
 				dec->cw_bits = 0;
+				/* compute number of sync2 dotting bits to skip */
+				/* sync2 is at the symbol baud rate, not throughput */
+			int sym_baud;
+			switch (dec->speed) {
+			case FLEX_SPEED_1600_2:
+			case FLEX_SPEED_3200_4:  sym_baud = 1600; break;
+			case FLEX_SPEED_3200_2:
+			case FLEX_SPEED_6400_4:  sym_baud = 3200; break;
+			default:                 sym_baud = 1600; break;
+			}
+			dec->skip_bits = sym_baud * 25 / 1000;
 			} else {
 				dec->state = FLEX_DEC_HUNTING;
 			}
@@ -268,27 +306,16 @@ static void process_bit(flex_decoder_t *dec, int bit)
 		break;
 
 	case FLEX_DEC_SYNC2:
-		/* accumulate 32-bit sync2 marker */
-		dec->cw_accum = (dec->cw_accum << 1) | (bit & 1);
+		/* skip sync2 dotting bits */
 		dec->cw_bits++;
-		if (dec->cw_bits == 32) {
-			/* tolerate some bit errors in sync2 */
-			uint32_t diff = dec->cw_accum ^ FLEX_SYNC_MARKER;
-			int hamming = 0;
-			while (diff) { hamming += diff & 1; diff >>= 1; }
-
-			if (hamming <= 6) {
-				/* good enough sync2 */
-				dec->state = FLEX_DEC_BLOCK;
-				dec->block_index = 0;
-				dec->block_buf_bits = 0;
-				/* clear frame storage */
-				memset(dec->frame_cws, 0, sizeof(dec->frame_cws));
-				for (int p = 0; p < FLEX_MAX_PHASES; p++)
-					dec->frame_cw_count[p] = 0;
-			} else {
-				dec->state = FLEX_DEC_HUNTING;
-			}
+		if (dec->cw_bits >= dec->skip_bits) {
+			dec->state = FLEX_DEC_BLOCK;
+			dec->block_index = 0;
+			dec->block_buf_bits = 0;
+			/* clear frame storage */
+			memset(dec->frame_cws, 0, sizeof(dec->frame_cws));
+			for (int p = 0; p < FLEX_MAX_PHASES; p++)
+				dec->frame_cw_count[p] = 0;
 		}
 		break;
 

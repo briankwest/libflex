@@ -46,7 +46,7 @@ flex_err_t flex_fiw_decode(uint32_t codeword, flex_fiw_t *fiw)
 		return FLEX_ERR_BCH;
 
 	/* extract 21 data bits */
-	uint32_t data21 = codeword >> 11;
+	uint32_t data21 = codeword & 0x1FFFFFu;
 
 	/* validate checksum */
 	if (!fiw_checksum_valid(data21))

@@ -61,17 +61,17 @@ static void test_interleave_zeros(void)
 
 static void test_interleave_column_order(void)
 {
-	/* only cw[0] has MSB set -- after interleave, bit 0 should be 1,
-	 * bits 1-7 should be 0 (those are the other codewords' MSBs) */
+	/* only cw[0] has LSB set -- after LSB-first interleave, bit 0 should be 1,
+	 * bits 1-7 should be 0 (those are the other codewords' bit 0) */
 	uint32_t cws[8];
 	memset(cws, 0, sizeof(cws));
-	cws[0] = 0x80000000u;
+	cws[0] = 0x00000001u;
 
 	uint8_t bits[256];
 	int nbits = 0;
 	flex_interleave(cws, 8, bits, &nbits);
 
-	ASSERT_EQ_INT(bits[0], 1);  /* cw[0] bit 31 */
+	ASSERT_EQ_INT(bits[0], 1);  /* cw[0] bit 0 */
 	for (int i = 1; i < 256; i++)
 		ASSERT_EQ_INT(bits[i], 0);
 }
@@ -120,7 +120,7 @@ static void test_interleave_burst_correction(void)
 
 	/* each codeword should have at most 2 errors (16 / 8 = 2) */
 	for (int i = 0; i < 8; i++) {
-		ASSERT_EQ_INT(flex_bch_correct(&recovered[i]), 0);
+		ASSERT(flex_bch_correct(&recovered[i]) >= 0);
 		ASSERT_EQ_U32(recovered[i], cws[i]);
 	}
 }

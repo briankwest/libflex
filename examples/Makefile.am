@@ -1,4 +1,4 @@
-noinst_PROGRAMS = encode_page decode_stream encode_wav decode_wav
+noinst_PROGRAMS = encode_page decode_stream encode_wav decode_wav gen_baseband
 
 encode_page_SOURCES = encode_page.c
 encode_page_CFLAGS = \
@@ -27,3 +27,10 @@ decode_wav_CFLAGS = \
 	-Wall -Wextra -pedantic \
 	-I$(top_srcdir)/include
 decode_wav_LDADD = $(top_builddir)/src/libflex.la
+
+gen_baseband_SOURCES = gen_baseband.c
+gen_baseband_CFLAGS = \
+	-std=c99 \
+	-Wall -Wextra -pedantic \
+	-I$(top_srcdir)/include
+gen_baseband_LDADD = $(top_builddir)/src/libflex.la

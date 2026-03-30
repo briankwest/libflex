@@ -11,9 +11,9 @@ static const struct {
 	flex_speed_t speed;
 } mode_table[] = {
 	{ FLEX_MODE_1600_2, FLEX_SPEED_1600_2 },
+	{ FLEX_MODE_1600_4, FLEX_SPEED_3200_4 },
 	{ FLEX_MODE_3200_2, FLEX_SPEED_3200_2 },
-	{ FLEX_MODE_3200_4, FLEX_SPEED_3200_4 },
-	{ FLEX_MODE_6400_4, FLEX_SPEED_6400_4 },
+	{ FLEX_MODE_3200_4, FLEX_SPEED_6400_4 },
 };
 
 #define MODE_TABLE_SIZE  (sizeof(mode_table) / sizeof(mode_table[0]))
@@ -63,7 +63,10 @@ flex_err_t flex_sync_detect_speed(uint16_t mode_word, flex_speed_t *speed)
 }
 
 /*
- * Build Sync1: bit sync (16 bits 0xAAAA) + sync marker (32 bits) + mode word (16 bits)
+ * Build Sync1 (Frame Sync): A-word + B-word + C-word
+ *   A-word: 16-bit mode/sync code
+ *   B-word: 32-bit sync marker (0xA6C6AAAA)
+ *   C-word: 16-bit complement of A-word
  * Total: 64 bits = 8 bytes, always at 1600 bps 2-FSK.
  */
 flex_err_t flex_sync1_build(flex_speed_t speed,
@@ -83,23 +86,23 @@ flex_err_t flex_sync1_build(flex_speed_t speed,
 	if (mode_word == 0)
 		return FLEX_ERR_SPEED;
 
-	/* 16-bit bit sync + 32-bit marker + 16-bit mode = 64 bits = 8 bytes */
 	if (out_cap < 8)
 		return FLEX_ERR_OVERFLOW;
 
 	flex_bs_t bs;
 	bs_init(&bs, out, out_cap);
 
-	/* bit sync: 0xAAAA (alternating 1/0) */
-	for (int i = 15; i >= 0; i--)
-		bs_write_bit(&bs, (0xAAAAu >> i) & 1);
-
-	/* sync marker: 0xA6C6AAAA */
-	bs_write_codeword(&bs, FLEX_SYNC_MARKER);
-
-	/* mode word: 16 bits */
+	/* A-word: mode/sync code (16 bits, MSB first) */
 	for (int i = 15; i >= 0; i--)
 		bs_write_bit(&bs, (mode_word >> i) & 1);
+
+	/* B-word: sync marker (32 bits, MSB first) */
+	bs_write_codeword(&bs, FLEX_SYNC_MARKER);
+
+	/* C-word: complement of A-word (16 bits, MSB first) */
+	uint16_t complement = mode_word ^ 0xFFFFu;
+	for (int i = 15; i >= 0; i--)
+		bs_write_bit(&bs, (complement >> i) & 1);
 
 	*out_bits = bs.total_bits;
 	return FLEX_OK;

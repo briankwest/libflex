@@ -471,3 +471,98 @@ flex_err_t flex_wav_read(const char *path, float *samples,
 	fclose(f);
 	return FLEX_OK;
 }
+
+/* ================================================================
+ * Baseband NRZ/4-level output
+ * ================================================================ */
+
+/*
+ * The encoder bitstream has a fixed header (preamble + sync1 + dotting
+ * + FIW = 1072 bits) always at 1600 baud, followed by sync2 dotting
+ * and data at the mode's baud rate.
+ *
+ * For 2-FSK: each bit maps to one sample level (±1.0).
+ * For 4-FSK: pairs of phase bits are combined into 4-level symbols.
+ *
+ * However, the encoder already interleaves phases into the bitstream,
+ * so for 2-FSK modes we emit one sample per bit, and for 4-FSK modes
+ * the bits are already phase-interleaved — pairs of consecutive bits
+ * represent (phase_A, phase_B) and map to a 4-level symbol.
+ */
+
+#define FLEX_HEADER_BITS  1072  /* preamble(960)+sync1(64)+dotting(16)+FIW(32) */
+
+/* Gray code: (A=0,B=0)→-1.0, (A=0,B=1)→-0.33, (A=1,B=1)→+0.33, (A=1,B=0)→+1.0 */
+static float gray_level(int bit_a, int bit_b)
+{
+	if (!bit_a && !bit_b) return -0.73f;
+	if (!bit_a &&  bit_b) return -0.73f / 3.0f;
+	if ( bit_a &&  bit_b) return  0.73f / 3.0f;
+	return 0.73f;
+}
+
+flex_err_t flex_baseband(const uint8_t *bits, size_t nbits,
+                         flex_speed_t speed, float sample_rate,
+                         float *out, size_t out_cap,
+                         size_t *out_len)
+{
+	if (!bits || !out || !out_len)
+		return FLEX_ERR_PARAM;
+	if (sample_rate < 8000.0f || nbits == 0)
+		return FLEX_ERR_PARAM;
+
+	int data_baud;
+	int is_4fsk = flex_speed_is_4fsk(speed);
+
+	switch (speed) {
+	case FLEX_SPEED_1600_2:  data_baud = 1600; break;
+	case FLEX_SPEED_3200_2:  data_baud = 3200; break;
+	case FLEX_SPEED_3200_4:  data_baud = 1600; break;
+	case FLEX_SPEED_6400_4:  data_baud = 3200; break;
+	default:                 data_baud = 1600; break;
+	}
+
+	/* Use 16-bit fixed-point phase accumulation matching multimon-ng's
+	 * generator for exact timing compatibility at all sample rates. */
+	unsigned int hdr_phinc  = (unsigned int)(0x10000u * 1600 / sample_rate);
+	unsigned int data_phinc = (unsigned int)(0x10000u * data_baud / sample_rate);
+
+	size_t bi = 0;
+	size_t wi = 0;
+	unsigned int bitph = 0;
+
+	/* Match multimon-ng gen_flex.c timing: increment phase first,
+	 * check for wrap (advance bit), THEN output current bit.
+	 * Every loop iteration produces exactly one sample. */
+	while (bi < nbits && wi < out_cap) {
+		unsigned int phinc = (bi < FLEX_HEADER_BITS) ? hdr_phinc : data_phinc;
+
+		/* advance phase — if wrap, move to next bit/symbol */
+		bitph += phinc;
+		if (bitph >= 0x10000u) {
+			bitph &= 0xFFFFu;
+			bi++;
+			if (bi >= nbits) break;
+
+			/* for 4-FSK data, consume the second bit of the pair */
+			if (is_4fsk && bi >= FLEX_HEADER_BITS && (bi & 1) == 0)
+				bi++;  /* skip — already consumed below */
+		}
+
+		int bit = (bits[bi / 8] >> (7 - (int)(bi & 7))) & 1;
+
+		if (!is_4fsk || bi < FLEX_HEADER_BITS) {
+			out[wi++] = bit ? 0.73f : -0.73f;
+		} else {
+			int bit_a = bit;
+			int bit_b = 0;
+			size_t bi2 = bi + 1;
+			if (bi2 < nbits)
+				bit_b = (bits[bi2 / 8] >> (7 - (int)(bi2 & 7))) & 1;
+			out[wi++] = gray_level(bit_a, bit_b);
+		}
+	}
+
+	*out_len = wi;
+	return FLEX_OK;
+}

@@ -51,6 +51,34 @@ flex_err_t flex_mod_bits(flex_mod_t *mod,
                          float *samples, size_t samples_cap,
                          size_t *nsamples);
 
+/* Generate baseband NRZ/4-level samples from a bitstream.
+ *
+ * Produces flat-level-per-symbol output suitable for feeding an FM
+ * transmitter or for direct decoding by multimon-ng.
+ *
+ * The encoder output (from flex_encode/flex_encode_single) includes
+ * preamble, sync, FIW, dotting, and interleaved data.  This function
+ * converts that bitstream to baseband samples at the given sample rate.
+ *
+ * 2-FSK modes: bit 1 → +1.0, bit 0 → -1.0
+ * 4-FSK modes: symbols encoded as ±1/3 and ±1.0
+ *
+ * The baud rate changes mid-frame (1600 for header, mode baud for
+ * data).  The function handles this internally based on frame structure.
+ *
+ * bits:        packed byte array (MSB-first, from flex_encode)
+ * nbits:       total bits in the frame
+ * speed:       FLEX speed mode (determines baud rate and FSK levels)
+ * sample_rate: output sample rate in Hz
+ * out:         output float sample buffer
+ * out_cap:     capacity of out in samples
+ * out_len:     receives the actual number of samples written
+ */
+flex_err_t flex_baseband(const uint8_t *bits, size_t nbits,
+                         flex_speed_t speed, float sample_rate,
+                         float *out, size_t out_cap,
+                         size_t *out_len);
+
 /* ---- Demodulator ---- */
 
 typedef struct {
