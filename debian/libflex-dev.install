@@ -1,0 +1,5 @@
+usr/include/libflex/*
+usr/lib/*/libflex.so
+usr/lib/*/libflex.a
+usr/lib/*/libflex.la
+usr/lib/*/pkgconfig/libflex.pc
