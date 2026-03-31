@@ -506,6 +506,16 @@ flex_err_t flex_baseband(const uint8_t *bits, size_t nbits,
                          float *out, size_t out_cap,
                          size_t *out_len)
 {
+	return flex_baseband_ex(bits, nbits, speed, sample_rate,
+	                        0, out, out_cap, out_len);
+}
+
+flex_err_t flex_baseband_ex(const uint8_t *bits, size_t nbits,
+                            flex_speed_t speed, float sample_rate,
+                            int flags,
+                            float *out, size_t out_cap,
+                            size_t *out_len)
+{
 	if (!bits || !out || !out_len)
 		return FLEX_ERR_PARAM;
 	if (sample_rate < 8000.0f || nbits == 0)
@@ -560,6 +570,17 @@ flex_err_t flex_baseband(const uint8_t *bits, size_t nbits,
 			if (bi2 < nbits)
 				bit_b = (bits[bi2 / 8] >> (7 - (int)(bi2 & 7))) & 1;
 			out[wi++] = gray_level(bit_a, bit_b);
+		}
+	}
+
+	/* Apply 75µs de-emphasis (first-order IIR lowpass) to pre-cancel
+	 * the radio's TX pre-emphasis. */
+	if ((flags & FLEX_BASEBAND_DEEMPH) && wi > 0) {
+		float alpha = 1.0f / (1.0f + sample_rate * 75e-6f);
+		float prev = out[0];
+		for (size_t i = 1; i < wi; i++) {
+			prev = prev + alpha * (out[i] - prev);
+			out[i] = prev;
 		}
 	}
 

@@ -79,6 +79,20 @@ flex_err_t flex_baseband(const uint8_t *bits, size_t nbits,
                          float *out, size_t out_cap,
                          size_t *out_len);
 
+/* Baseband flags for flex_baseband_ex() */
+#define FLEX_BASEBAND_DEEMPH  0x01  /* apply 75µs de-emphasis to cancel
+                                     * radio TX pre-emphasis */
+
+/* Extended baseband with flags.
+ * Same as flex_baseband() but accepts flags for signal conditioning.
+ * FLEX_BASEBAND_DEEMPH: apply a 75µs first-order IIR lowpass so that
+ * after the radio's pre-emphasis the receiver gets a flat signal. */
+flex_err_t flex_baseband_ex(const uint8_t *bits, size_t nbits,
+                            flex_speed_t speed, float sample_rate,
+                            int flags,
+                            float *out, size_t out_cap,
+                            size_t *out_len);
+
 /* ---- Demodulator ---- */
 
 typedef struct {
