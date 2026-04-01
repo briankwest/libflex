@@ -299,20 +299,10 @@ flex_err_t flex_demod_baseband(flex_demod_t *demod,
 	if (!demod || !samples)
 		return FLEX_ERR_PARAM;
 
-	/* Two-stage cascaded IIR low-pass at 1.5x symbol rate to reject
-	 * wideband FM discriminator noise.  Without this, noise energy
-	 * (up to Nyquist) overwhelms the data signal in the accumulator.
-	 * Uses prev_i/prev_q as filter state (unused in baseband mode). */
-	float alpha_lp = 1.0f / (1.0f + demod->sample_rate
-	                 / (2.0f * (float)M_PI * 1.5f * (float)demod->baud));
-
 	for (size_t i = 0; i < nsamples; i++) {
-		/* two-stage IIR low-pass, then accumulate */
-		demod->prev_i += alpha_lp * (samples[i] - demod->prev_i);
-		demod->prev_q += alpha_lp * (demod->prev_i - demod->prev_q);
-		float s = demod->prev_q;
+		float s = samples[i];
 
-		/* accumulate filtered level over symbol period */
+		/* accumulate sample level over symbol period */
 		demod->sym_accum += s;
 		demod->sym_count++;
 
@@ -591,45 +581,41 @@ flex_err_t flex_baseband_ex(const uint8_t *bits, size_t nbits,
 	default:                 data_baud = 1600; break;
 	}
 
-	/* Use 16-bit fixed-point phase accumulation matching multimon-ng's
-	 * generator for exact timing compatibility at all sample rates. */
-	unsigned int hdr_phinc  = (unsigned int)(0x10000u * 1600 / sample_rate);
-	unsigned int data_phinc = (unsigned int)(0x10000u * data_baud / sample_rate);
+	/* Floating-point bit boundaries to avoid timing drift from
+	 * integer phase accumulation truncation. */
+	double hdr_spb  = (double)sample_rate / 1600.0;
+	double data_spb = (double)sample_rate / (double)data_baud;
 
 	size_t bi = 0;
 	size_t wi = 0;
-	unsigned int bitph = 0;
 
-	/* Match multimon-ng gen_flex.c timing: increment phase first,
-	 * check for wrap (advance bit), THEN output current bit.
-	 * Every loop iteration produces exactly one sample. */
 	while (bi < nbits && wi < out_cap) {
-		unsigned int phinc = (bi < FLEX_HEADER_BITS) ? hdr_phinc : data_phinc;
-
-		/* advance phase — if wrap, move to next bit/symbol */
-		bitph += phinc;
-		if (bitph >= 0x10000u) {
-			bitph &= 0xFFFFu;
-			bi++;
-			if (bi >= nbits) break;
-
-			/* for 4-FSK data, consume the second bit of the pair */
-			if (is_4fsk && bi >= FLEX_HEADER_BITS && (bi & 1) == 0)
-				bi++;  /* skip — already consumed below */
-		}
+		double spb = (bi < FLEX_HEADER_BITS) ? hdr_spb : data_spb;
 
 		int bit = (bits[bi / 8] >> (7 - (int)(bi & 7))) & 1;
+		float level;
 
 		if (!is_4fsk || bi < FLEX_HEADER_BITS) {
-			out[wi++] = bit ? 0.73f : -0.73f;
+			level = bit ? 0.73f : -0.73f;
 		} else {
 			int bit_a = bit;
 			int bit_b = 0;
 			size_t bi2 = bi + 1;
 			if (bi2 < nbits)
 				bit_b = (bits[bi2 / 8] >> (7 - (int)(bi2 & 7))) & 1;
-			out[wi++] = gray_level(bit_a, bit_b);
+			level = gray_level(bit_a, bit_b);
 		}
+
+		/* fill samples for this bit/symbol period */
+		size_t next = (size_t)((double)(bi + 1) * spb + 0.5);
+		if (next > out_cap) next = out_cap;
+		while (wi < next)
+			out[wi++] = level;
+
+		bi++;
+		/* for 4-FSK data, consume the second bit of the pair */
+		if (is_4fsk && bi >= FLEX_HEADER_BITS && (bi & 1) == 0)
+			bi++;
 	}
 
 	/* Apply 75µs de-emphasis (first-order IIR lowpass) to pre-cancel
