@@ -13,17 +13,38 @@
  * ================================================================ */
 
 /*
- * Compute adaptive baseband frequencies from sample rate.
- * All 4 tones must fit between ~200 Hz and Nyquist (sr/2).
- * Center = sr * 0.20, outer deviation = sr * 0.13, inner = outer/3.
- * This ensures at 8 kHz:   tones = 240, 1167, 2433, 3360  (all < 4000)
- *              at 48 kHz:  tones = 3360, 7200, 12000, 15840 (all < 24000)
+ * Compute FSK tone frequencies.  For 1600 baud (the standard radio
+ * mode), tones are placed in the voice band (1200-2400 Hz) so they
+ * survive the radio's audio chain.  For higher baud rates, tones
+ * scale with sample rate to give the Goertzel detector enough
+ * frequency separation per symbol period.
+ *
+ * 1600 baud:  center=1800  dev=600  inner=200  → tones 1200-2400 Hz
+ * Higher:     adaptive scaling (sr*0.20 / sr*0.13 / dev/3)
  */
 static void compute_baseband_freqs(float sr, float *center, float *dev, float *inner)
 {
-	*center = sr * 0.20f;
-	*dev    = sr * 0.13f;
-	*inner  = *dev / 3.0f;
+	/* Voice-band: all tones 1200-2400 Hz (radio-safe) */
+	*center = 1800.0f;
+	*dev    = 600.0f;
+	*inner  = 200.0f;
+
+	/* At higher baud rates the Goertzel needs wider separation.
+	 * Fall back to adaptive scaling if voice-band tones won't
+	 * give at least 1 cycle of the lowest tone per symbol at
+	 * the highest symbol rate (3200 sym/s for 6400_4). */
+	float min_tone = *center - *dev;         /* 1200 Hz */
+	float min_cycles = min_tone / 3200.0f;   /* cycles per symbol at 3200 sym/s */
+	float spb_at_3200 = sr / 3200.0f;       /* samples per symbol */
+	float actual_cycles = min_cycles * spb_at_3200 / (sr / min_tone);
+
+	/* If we can't get ~0.5 cycles of the lowest tone per symbol
+	 * at the fastest symbol rate, widen to adaptive scaling. */
+	if (spb_at_3200 < 10.0f || actual_cycles < 0.4f) {
+		*center = sr * 0.20f;
+		*dev    = sr * 0.13f;
+		*inner  = *dev / 3.0f;
+	}
 }
 
 void flex_mod_init(flex_mod_t *mod, flex_speed_t speed, float sample_rate)
