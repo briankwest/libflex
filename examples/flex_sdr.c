@@ -92,6 +92,7 @@ static void usage(const char *prog)
 	    "  -S open:close Squelch thresholds (default %d:%d)\n"
 	    "  -m mode       Demod mode: fsk (default) or baseband\n"
 	    "  -w file       Dump raw audio to 16-bit WAV for analysis\n"
+	    "  -E            Disable de-emphasis (for data/FSK signals)\n"
 	    "  -i            Invert polarity\n"
 	    "  -v            Verbose (print stats periodically)\n",
 	    prog, DEFAULT_SDR_RATE, DEFAULT_AUDIO_RATE,
@@ -109,11 +110,12 @@ int main(int argc, char **argv)
 	int       sq_close_th = DEFAULT_SQ_CLOSE;
 	int       use_fsk     = 1;          /* default: FSK Goertzel */
 	const char *wav_path  = NULL;
+	int       no_deemph   = 0;
 	int       invert      = 0;
 	int       verbose     = 0;
 
 	int opt;
-	while ((opt = getopt(argc, argv, "f:d:g:s:r:S:m:w:ivh")) != -1) {
+	while ((opt = getopt(argc, argv, "f:d:g:s:r:S:m:w:Eivh")) != -1) {
 		switch (opt) {
 		case 'f': freq_mhz    = atof(optarg); break;
 		case 'd': dev_idx     = atoi(optarg); break;
@@ -123,6 +125,7 @@ int main(int argc, char **argv)
 		case 'S': sscanf(optarg, "%d:%d", &sq_open_th, &sq_close_th); break;
 		case 'm': use_fsk     = (strcmp(optarg, "baseband") != 0); break;
 		case 'w': wav_path    = optarg; break;
+		case 'E': no_deemph   = 1; break;
 		case 'i': invert      = 1; break;
 		case 'v': verbose     = 1; break;
 		default:  usage(argv[0]); return 1;
@@ -268,9 +271,10 @@ int main(int argc, char **argv)
 			dc_x_prev = fm;
 			dc_y_prev = dc_out;
 
-			deemph_state += alpha_de * (dc_out - deemph_state);
+			if (!no_deemph)
+				deemph_state += alpha_de * (dc_out - deemph_state);
 
-			dec_sum += deemph_state;
+			dec_sum += no_deemph ? dc_out : deemph_state;
 			dec_count++;
 			dec_acc += dec_step;
 
