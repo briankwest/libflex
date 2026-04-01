@@ -356,9 +356,17 @@ int main(int argc, char **argv)
 				                    (size_t)audio_pos);
 
 			if (demod.out_count > 0) {
+				flex_dec_state_t prev_state = decoder.state;
 				flex_decoder_feed_bits(&decoder, demod.out_bits,
 				                      demod.out_count);
 				total_bits += (uint32_t)demod.out_count;
+
+				/* After a complete frame, the decoder returns
+				 * to HUNTING.  Reset the demod so the symbol
+				 * clock re-syncs to the next preamble. */
+				if (prev_state != FLEX_DEC_HUNTING &&
+				    decoder.state == FLEX_DEC_HUNTING)
+					flex_demod_reset(&demod);
 			}
 		}
 
