@@ -34,7 +34,7 @@ jobs:
             apt-get update
             apt-get install -y \
               build-essential pkg-config devscripts debhelper fakeroot \
-              autoconf automake libtool
+              autoconf automake libtool librtlsdr-dev
             bash autogen.sh
             ./configure
             make
@@ -78,7 +78,7 @@ jobs:
             apt-get update
             apt-get install -y \
               build-essential pkg-config devscripts debhelper fakeroot \
-              autoconf automake libtool
+              autoconf automake libtool librtlsdr-dev
             bash autogen.sh
             ./configure
             make
@@ -119,7 +119,7 @@ jobs:
               apt-get update
               apt-get install -y \
                 build-essential pkg-config devscripts debhelper fakeroot \
-                autoconf automake libtool
+                autoconf automake libtool librtlsdr-dev
               bash autogen.sh
               ./configure
               make
