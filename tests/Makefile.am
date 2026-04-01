@@ -22,7 +22,8 @@ noinst_HEADERS = test.h
 test_libflex_CFLAGS = \
 	-std=c99 \
 	-Wall -Wextra -pedantic \
-	-I$(top_srcdir)/include
+	-I$(top_srcdir)/include \
+	$(AM_CFLAGS)
 
 test_libflex_LDADD = $(top_builddir)/src/libflex.la -lm
 

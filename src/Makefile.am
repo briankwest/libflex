@@ -21,7 +21,8 @@ noinst_HEADERS = flex_internal.h
 libflex_la_CFLAGS = \
 	-std=c99 \
 	-Wall -Wextra -pedantic \
-	-I$(top_srcdir)/include
+	-I$(top_srcdir)/include \
+	$(AM_CFLAGS)
 
 libflex_la_LDFLAGS = -version-info 0:0:0
 libflex_la_LIBADD = -lm
