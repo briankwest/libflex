@@ -282,6 +282,55 @@ flex_err_t flex_demod_feed(flex_demod_t *demod,
 	return FLEX_OK;
 }
 
+/*
+ * Baseband (FM discriminator output) demodulator.
+ *
+ * Input is post-discriminator audio: positive = higher frequency (mark),
+ * negative = lower frequency (space).  This is what comes out of an FM
+ * receiver's discriminator or an SDR FM demod chain.
+ *
+ * 2-FSK: accumulate sample level over symbol period, slice at zero.
+ * The decoder handles sync detection and speed auto-detection from
+ * the recovered bit stream.
+ */
+flex_err_t flex_demod_baseband(flex_demod_t *demod,
+                               const float *samples, size_t nsamples)
+{
+	if (!demod || !samples)
+		return FLEX_ERR_PARAM;
+
+	for (size_t i = 0; i < nsamples; i++) {
+		float s = samples[i];
+
+		/* accumulate sample level over symbol period */
+		demod->sym_accum += s;
+		demod->sym_count++;
+
+		/* advance symbol clock */
+		demod->phase += 1.0f;
+
+		/* symbol boundary */
+		if (demod->phase >= demod->phase_max) {
+			demod->phase -= demod->phase_max;
+
+			if (demod->sym_count > 0) {
+				float avg = demod->sym_accum / (float)demod->sym_count;
+
+				/* 2-FSK: positive = bit 1, negative = bit 0 */
+				int bit = (avg > 0) ? 1 : 0;
+
+				if (demod->out_count < sizeof(demod->out_bits))
+					demod->out_bits[demod->out_count++] = (uint8_t)bit;
+			}
+
+			demod->sym_accum = 0.0f;
+			demod->sym_count = 0;
+		}
+	}
+
+	return FLEX_OK;
+}
+
 /* ================================================================
  * WAV file I/O
  * ================================================================ */

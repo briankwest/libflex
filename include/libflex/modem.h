@@ -142,6 +142,14 @@ void flex_demod_init_speed(flex_demod_t *demod, float sample_rate,
 flex_err_t flex_demod_feed(flex_demod_t *demod,
                            const float *samples, size_t nsamples);
 
+/* Feed baseband (FM discriminator output) samples to the demodulator.
+ * This is for post-discriminator audio from an SDR or radio receiver.
+ * The signal is NRZ-like: positive levels = mark, negative = space.
+ * For 2-FSK: slices at zero crossing. For 4-FSK: 4-level slicer.
+ * Bits accumulate in demod->out_bits[]. */
+flex_err_t flex_demod_baseband(flex_demod_t *demod,
+                               const float *samples, size_t nsamples);
+
 /* Reset demodulator state */
 void flex_demod_reset(flex_demod_t *demod);
 

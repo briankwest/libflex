@@ -422,6 +422,7 @@ Tests cover:
 | `decode_wav` | Decode a FLEX WAV audio file back to messages |
 | `gen_baseband` | Generate NRZ baseband WAV files for multimon-ng testing |
 | `gen_samples` | Generate sample WAV files for all type/speed/rate combinations |
+| `flex_sdr` | Live FLEX receiver using RTL-SDR (requires librtlsdr) |
 
 ```bash
 # Encode a numeric page to raw bitstream
@@ -451,6 +452,39 @@ Tests cover:
 # Generate all sample WAV files (48 files across all speeds/rates/types)
 ./gen_samples samples/
 ```
+
+### RTL-SDR Receiver
+
+`flex_sdr` is a live FLEX pager receiver using an RTL-SDR dongle. It performs the full pipeline: IQ capture → FM discriminator → DC block → de-emphasis → decimation → baseband slicer → FLEX decoder.
+
+Requires `librtlsdr-dev` (`apt install librtlsdr-dev`).
+
+```bash
+# Listen on a FLEX paging frequency
+./flex_sdr -f 929.6625
+
+# With manual gain and verbose stats
+./flex_sdr -f 929.6625 -g 400 -v
+
+# Inverted polarity (some receivers invert)
+./flex_sdr -f 929.6625 -i
+
+# Custom SDR and audio sample rates
+./flex_sdr -f 929.6625 -s 240000 -r 48000
+```
+
+Options:
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-f freq` | (required) | Frequency in MHz |
+| `-d index` | 0 | RTL-SDR device index |
+| `-g gain` | auto | Tuner gain in dB*10 (e.g., `-g 400` = 40.0 dB) |
+| `-s rate` | 240000 | SDR sample rate in Hz |
+| `-r rate` | 48000 | Audio decimation rate in Hz |
+| `-i` | off | Invert FM discriminator polarity |
+| `-v` | off | Print periodic statistics |
+
+The receiver auto-detects the FLEX speed from the sync marker -- no need to specify baud rate. All four speeds (1600/3200/6400 bps) are decoded automatically.
 
 ## Project Structure
 
@@ -495,6 +529,7 @@ libflex/
     decode_wav.c        Decode WAV audio file to messages
     gen_baseband.c      Generate NRZ/4-level baseband WAVs for multimon-ng
     gen_samples.c       Generate sample WAVs for all combinations
+    flex_sdr.c          Live RTL-SDR FLEX receiver (requires librtlsdr)
   samples/              48 pre-generated WAV files (all types x speeds x rates)
   debian/               Debian packaging files
   configure.ac          Autoconf configuration
