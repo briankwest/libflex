@@ -12,6 +12,17 @@
  * Modulator
  * ================================================================ */
 
+static int speed_to_baud(flex_speed_t speed)
+{
+	switch (speed) {
+	case FLEX_SPEED_1600_2: return 1600;
+	case FLEX_SPEED_3200_2: return 3200;
+	case FLEX_SPEED_3200_4: return 1600;
+	case FLEX_SPEED_6400_4: return 3200;
+	}
+	return 1600;
+}
+
 /*
  * Compute FSK tone frequencies.  For 1600 baud (the standard radio
  * mode), tones are placed in the voice band (1200-2400 Hz) so they
@@ -22,25 +33,16 @@
  * 1600 baud:  center=1800  dev=600  inner=200  → tones 1200-2400 Hz
  * Higher:     adaptive scaling (sr*0.20 / sr*0.13 / dev/3)
  */
-static void compute_baseband_freqs(float sr, float *center, float *dev, float *inner)
+static void compute_baseband_freqs(float sr, int baud, int is_4fsk, float *center, float *dev, float *inner)
 {
-	/* Voice-band: all tones 1200-2400 Hz (radio-safe) */
-	*center = 1800.0f;
-	*dev    = 600.0f;
-	*inner  = 200.0f;
-
-	/* At higher baud rates the Goertzel needs wider separation.
-	 * Fall back to adaptive scaling if voice-band tones won't
-	 * give at least 1 cycle of the lowest tone per symbol at
-	 * the highest symbol rate (3200 sym/s for 6400_4). */
-	float min_tone = *center - *dev;         /* 1200 Hz */
-	float min_cycles = min_tone / 3200.0f;   /* cycles per symbol at 3200 sym/s */
-	float spb_at_3200 = sr / 3200.0f;       /* samples per symbol */
-	float actual_cycles = min_cycles * spb_at_3200 / (sr / min_tone);
-
-	/* If we can't get ~0.5 cycles of the lowest tone per symbol
-	 * at the fastest symbol rate, widen to adaptive scaling. */
-	if (spb_at_3200 < 10.0f || actual_cycles < 0.4f) {
+	if (baud <= 1600 && !is_4fsk) {
+		/* Voice-band: survives radio audio chain (300-3000 Hz) */
+		(void)sr;
+		*center = 1800.0f;
+		*dev    = 600.0f;
+		*inner  = 200.0f;
+	} else {
+		/* Adaptive: wider separation for Goertzel at high symbol rates */
 		*center = sr * 0.20f;
 		*dev    = sr * 0.13f;
 		*inner  = *dev / 3.0f;
@@ -52,16 +54,12 @@ void flex_mod_init(flex_mod_t *mod, flex_speed_t speed, float sample_rate)
 	memset(mod, 0, sizeof(*mod));
 	mod->speed = speed;
 	mod->sample_rate = sample_rate > 0 ? sample_rate : FLEX_MODEM_SAMPLE_RATE;
-	compute_baseband_freqs(mod->sample_rate, &mod->center_freq,
-	                       &mod->deviation, &mod->inner_dev);
+	mod->baud = speed_to_baud(speed);
+	compute_baseband_freqs(mod->sample_rate, mod->baud,
+	                       flex_speed_is_4fsk(speed),
+	                       &mod->center_freq, &mod->deviation,
+	                       &mod->inner_dev);
 	mod->phase = 0.0f;
-
-	switch (speed) {
-	case FLEX_SPEED_1600_2: mod->baud = 1600; break;
-	case FLEX_SPEED_3200_2: mod->baud = 3200; break;
-	case FLEX_SPEED_3200_4: mod->baud = 1600; break;
-	case FLEX_SPEED_6400_4: mod->baud = 3200; break;
-	}
 }
 
 /*
@@ -158,24 +156,13 @@ done:
 #define PLL_UNLOCKED_R 0.050f
 #define LOCK_THRESHOLD 24
 
-static int speed_to_baud(flex_speed_t speed)
-{
-	switch (speed) {
-	case FLEX_SPEED_1600_2: return 1600;
-	case FLEX_SPEED_3200_2: return 3200;
-	case FLEX_SPEED_3200_4: return 1600;
-	case FLEX_SPEED_6400_4: return 3200;
-	}
-	return 1600;
-}
-
 void flex_demod_init(flex_demod_t *demod, float sample_rate)
 {
 	memset(demod, 0, sizeof(*demod));
 	demod->sample_rate = sample_rate > 0 ? sample_rate : FLEX_MODEM_SAMPLE_RATE;
-	float dev, inner;
-	compute_baseband_freqs(demod->sample_rate, &demod->center_freq, &dev, &inner);
 	demod->baud = 1600;
+	float dev, inner;
+	compute_baseband_freqs(demod->sample_rate, demod->baud, flex_speed_is_4fsk(demod->speed), &demod->center_freq, &dev, &inner);
 	demod->phase_max = demod->sample_rate / (float)demod->baud;
 	demod->phase = 0.0f;
 }
@@ -185,10 +172,10 @@ void flex_demod_init_speed(flex_demod_t *demod, float sample_rate,
 {
 	memset(demod, 0, sizeof(*demod));
 	demod->sample_rate = sample_rate > 0 ? sample_rate : FLEX_MODEM_SAMPLE_RATE;
-	float dev, inner;
-	compute_baseband_freqs(demod->sample_rate, &demod->center_freq, &dev, &inner);
 	demod->speed = speed;
 	demod->baud = speed_to_baud(speed);
+	float dev, inner;
+	compute_baseband_freqs(demod->sample_rate, demod->baud, flex_speed_is_4fsk(demod->speed), &demod->center_freq, &dev, &inner);
 	demod->phase_max = demod->sample_rate / (float)demod->baud;
 	demod->phase = 0.0f;
 }
@@ -223,7 +210,7 @@ flex_err_t flex_demod_feed(flex_demod_t *demod,
 
 	/* compute adaptive baseband frequencies matching the modulator */
 	float center, dev, inner;
-	compute_baseband_freqs(demod->sample_rate, &center, &dev, &inner);
+	compute_baseband_freqs(demod->sample_rate, demod->baud, flex_speed_is_4fsk(demod->speed), &center, &dev, &inner);
 
 	float freq[4];
 	int ntones;
