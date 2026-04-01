@@ -299,10 +299,20 @@ flex_err_t flex_demod_baseband(flex_demod_t *demod,
 	if (!demod || !samples)
 		return FLEX_ERR_PARAM;
 
-	for (size_t i = 0; i < nsamples; i++) {
-		float s = samples[i];
+	/* Two-stage cascaded IIR low-pass at 1.5x symbol rate to reject
+	 * wideband FM discriminator noise.  Without this, noise energy
+	 * (up to Nyquist) overwhelms the data signal in the accumulator.
+	 * Uses prev_i/prev_q as filter state (unused in baseband mode). */
+	float alpha_lp = 1.0f / (1.0f + demod->sample_rate
+	                 / (2.0f * (float)M_PI * 1.5f * (float)demod->baud));
 
-		/* accumulate sample level over symbol period */
+	for (size_t i = 0; i < nsamples; i++) {
+		/* two-stage IIR low-pass, then accumulate */
+		demod->prev_i += alpha_lp * (samples[i] - demod->prev_i);
+		demod->prev_q += alpha_lp * (demod->prev_i - demod->prev_q);
+		float s = demod->prev_q;
+
+		/* accumulate filtered level over symbol period */
 		demod->sym_accum += s;
 		demod->sym_count++;
 
