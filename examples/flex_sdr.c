@@ -37,8 +37,8 @@
 
 #define DEFAULT_SQ_OPEN    15000
 #define DEFAULT_SQ_CLOSE   17000
-#define SQ_DEBOUNCE_OPEN   3
-#define SQ_DEBOUNCE_CLOSE  5
+#define SQ_DEBOUNCE_OPEN   5
+#define SQ_DEBOUNCE_CLOSE  8
 
 /* ── ring buffer for async IQ reader ── */
 
@@ -333,7 +333,8 @@ int main(int argc, char **argv)
 
 			/* open when RMS drops significantly below baseline
 			 * OR below absolute threshold (no-carrier case) */
-			int dip = (rms_baseline > 1000 && rms < rms_baseline / 2);
+			/* dip must be significant: below 40% of baseline */
+			int dip = (rms_baseline > 1000 && rms < rms_baseline * 2 / 5);
 			int abs_open = (rms < sq_open_th);
 			if (dip || abs_open) {
 				sq_open_cnt++;
@@ -349,8 +350,9 @@ int main(int argc, char **argv)
 		} else {
 			/* close when RMS returns to baseline or exceeds
 			 * absolute close threshold (carrier dropped) */
+			/* recovered when back above 60% of baseline */
 			int recovered = (rms_baseline > 1000 &&
-			                 rms > rms_baseline * 3 / 4);
+			                 rms > rms_baseline * 3 / 5);
 			int abs_close = (rms > sq_close_th);
 			if (recovered || abs_close) {
 				sq_close_cnt++;
