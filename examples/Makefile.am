@@ -46,4 +46,4 @@ flex_sdr_CFLAGS = \
 	-Wall -Wextra -pedantic \
 	-I$(top_srcdir)/include \
 	$(AM_CFLAGS)
-flex_sdr_LDADD = $(top_builddir)/src/libflex.la -lrtlsdr -lm
+flex_sdr_LDADD = $(top_builddir)/src/libflex.la -lrtlsdr -lm -lpthread
