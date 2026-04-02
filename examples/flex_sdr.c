@@ -253,6 +253,8 @@ int main(int argc, char **argv)
 	uint32_t total_bits = 0;
 
 	int sq_open = 0, sq_open_cnt = 0, sq_close_cnt = 0;
+	int32_t rms_baseline = 0;   /* adaptive: tracks idle carrier RMS */
+	int rms_baseline_cnt = 0;
 
 	while (g_running) {
 		pthread_mutex_lock(&g_ring_mtx);
@@ -313,22 +315,50 @@ int main(int argc, char **argv)
 		}
 		int32_t rms = (int32_t)sqrtf((float)(rms_sum / audio_pos));
 
+		/* Adaptive squelch: works on both quiet channels (carrier
+		 * appears/disappears) and persistent-carrier repeaters
+		 * (modulation dips below idle baseline).
+		 *
+		 * Track the idle RMS baseline. A significant dip below
+		 * baseline indicates modulated signal (FLEX data).
+		 * Return to baseline = signal ended. */
 		if (!sq_open) {
-			if (rms < sq_open_th) {
+			/* update baseline from idle RMS */
+			if (rms_baseline == 0) {
+				rms_baseline = rms;
+			} else {
+				/* slow IIR: baseline tracks idle level */
+				rms_baseline = rms_baseline + (rms - rms_baseline) / 16;
+			}
+
+			/* open when RMS drops significantly below baseline
+			 * OR below absolute threshold (no-carrier case) */
+			int dip = (rms_baseline > 1000 && rms < rms_baseline / 2);
+			int abs_open = (rms < sq_open_th);
+			if (dip || abs_open) {
 				sq_open_cnt++;
 				if (sq_open_cnt >= SQ_DEBOUNCE_OPEN) {
 					sq_open = 1; sq_close_cnt = 0;
-					if (verbose) fprintf(stderr, "[squelch] OPEN  rms=%d\n", rms);
+					if (verbose)
+						fprintf(stderr, "[squelch] OPEN  rms=%d baseline=%d\n",
+						        rms, rms_baseline);
 					flex_decoder_reset(&decoder);
 					flex_demod_reset(&demod);
 				}
 			} else { sq_open_cnt = 0; }
 		} else {
-			if (rms > sq_close_th) {
+			/* close when RMS returns to baseline or exceeds
+			 * absolute close threshold (carrier dropped) */
+			int recovered = (rms_baseline > 1000 &&
+			                 rms > rms_baseline * 3 / 4);
+			int abs_close = (rms > sq_close_th);
+			if (recovered || abs_close) {
 				sq_close_cnt++;
 				if (sq_close_cnt >= SQ_DEBOUNCE_CLOSE) {
 					sq_open = 0; sq_open_cnt = 0;
-					if (verbose) fprintf(stderr, "[squelch] CLOSE rms=%d\n", rms);
+					if (verbose)
+						fprintf(stderr, "[squelch] CLOSE rms=%d baseline=%d\n",
+						        rms, rms_baseline);
 					flex_decoder_flush(&decoder);
 				}
 			} else { sq_close_cnt = 0; }
