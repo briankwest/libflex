@@ -203,6 +203,18 @@ int main(int argc, char **argv)
 	const float alpha_dc = 0.998f;
 	float deemph_state = 0.0f;
 	float alpha_de = 1.0f / (1.0f + (float)sdr_rate * 75e-6f);
+	/* Anti-alias + decimation: Butterworth 2nd-order at audio_rate/2 */
+	float aa_cutoff = (float)audio_rate / 2.0f;
+	float aa_w0 = tanf((float)M_PI * aa_cutoff / (float)sdr_rate);
+	float aa_Q = 0.7071f;
+	float aa_d = 1.0f + aa_w0 / aa_Q + aa_w0 * aa_w0;
+	float aa_b0 = aa_w0 * aa_w0 / aa_d;
+	float aa_b1 = 2.0f * aa_b0;
+	float aa_b2 = aa_b0;
+	float aa_a1 = 2.0f * (aa_w0 * aa_w0 - 1.0f) / aa_d;
+	float aa_a2 = (1.0f - aa_w0 / aa_Q + aa_w0 * aa_w0) / aa_d;
+	float aa_x1 = 0, aa_x2 = 0, aa_y1 = 0, aa_y2 = 0;
+
 	double dec_step = (double)audio_rate / (double)sdr_rate;
 	double dec_acc = 0.0;
 	float  dec_sum = 0.0f;
@@ -274,7 +286,12 @@ int main(int argc, char **argv)
 			if (!no_deemph)
 				deemph_state += alpha_de * (dc_out - deemph_state);
 
-			dec_sum += no_deemph ? dc_out : deemph_state;
+			float pre_dec = no_deemph ? dc_out : deemph_state;
+			float aa_y = aa_b0*pre_dec + aa_b1*aa_x1 + aa_b2*aa_x2
+			           - aa_a1*aa_y1 - aa_a2*aa_y2;
+			aa_x2 = aa_x1; aa_x1 = pre_dec;
+			aa_y2 = aa_y1; aa_y1 = aa_y;
+			dec_sum += aa_y;
 			dec_count++;
 			dec_acc += dec_step;
 
