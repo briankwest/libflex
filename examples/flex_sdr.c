@@ -335,7 +335,8 @@ int main(int argc, char **argv)
 			 * OR below absolute threshold (no-carrier case) */
 			/* dip must be significant: below 40% of baseline */
 			int dip = (rms_baseline > 1000 && rms < rms_baseline * 2 / 5);
-			int abs_open = (rms < sq_open_th);
+			/* absolute open only when no baseline established yet */
+			int abs_open = (rms_baseline < 1000 && rms < sq_open_th);
 			if (dip || abs_open) {
 				sq_open_cnt++;
 				if (sq_open_cnt >= SQ_DEBOUNCE_OPEN) {
@@ -353,7 +354,7 @@ int main(int argc, char **argv)
 			/* recovered when back above 60% of baseline */
 			int recovered = (rms_baseline > 1000 &&
 			                 rms > rms_baseline * 3 / 5);
-			int abs_close = (rms > sq_close_th);
+			int abs_close = (rms_baseline < 1000 && rms > sq_close_th);
 			if (recovered || abs_close) {
 				sq_close_cnt++;
 				if (sq_close_cnt >= SQ_DEBOUNCE_CLOSE) {
