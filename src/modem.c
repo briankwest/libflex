@@ -98,11 +98,15 @@ flex_err_t flex_mod_bits(flex_mod_t *mod,
 
 	int is_4fsk = flex_speed_is_4fsk(mod->speed);
 	float samples_per_symbol = mod->sample_rate / (float)mod->baud;
-	float sym_clock = 0.0f;  /* symbol clock accumulator */
+	float sym_clock = 0.0f;
 	size_t written = 0;
 	size_t bit_idx = 0;
 
-	/* current symbol frequency */
+	/* silence lead-in for receiver squelch */
+	size_t leadin = (size_t)(mod->sample_rate * FLEX_MODEM_LEADIN_MS / 1000);
+	for (size_t j = 0; j < leadin && written < samples_cap; j++)
+		samples[written++] = 0.0f;
+
 	int symbol = 0;
 	float freq = symbol_to_freq(mod, 0, is_4fsk);
 	int need_next = 1;
@@ -596,6 +600,11 @@ flex_err_t flex_baseband_ex(const uint8_t *bits, size_t nbits,
 
 	size_t bi = 0;
 	size_t wi = 0;
+
+	/* silence lead-in for receiver squelch */
+	size_t leadin = (size_t)(sample_rate * FLEX_MODEM_LEADIN_MS / 1000);
+	for (size_t j = 0; j < leadin && wi < out_cap; j++)
+		out[wi++] = 0.0f;
 
 	while (bi < nbits && wi < out_cap) {
 		double spb = (bi < FLEX_HEADER_BITS) ? hdr_spb : data_spb;

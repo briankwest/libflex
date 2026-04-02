@@ -11,6 +11,7 @@ extern "C" {
 #endif
 
 /* ---- Default parameters ---- */
+#define FLEX_MODEM_LEADIN_MS     500    /* silence before preamble */
 #define FLEX_MODEM_SAMPLE_RATE   48000
 #define FLEX_MODEM_DEVIATION     4800.0f   /* ±4800 Hz for outer symbols */
 #define FLEX_MODEM_INNER_DEV     1600.0f   /* ±1600 Hz for inner 4-FSK symbols */
