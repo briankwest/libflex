@@ -12,6 +12,9 @@ LT_INIT
 AC_PROG_CC
 AC_PROG_INSTALL
 
+PKG_CHECK_MODULES([RTLSDR], [librtlsdr], [have_rtlsdr=yes], [have_rtlsdr=no])
+AM_CONDITIONAL([HAVE_RTLSDR], [test "x$have_rtlsdr" = "xyes"])
+
 AC_CONFIG_HEADERS([config.h])
 
 AC_CONFIG_FILES([
