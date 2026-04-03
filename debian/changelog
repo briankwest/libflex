@@ -1,4 +1,16 @@
-libflex (0.1.0-1) stable; urgency=low
+libflex (1.0.2-1) stable; urgency=low
+
+  * Voice-band FSK tones (1200/2400 Hz) for radio compatibility
+  * Fixed baseband generator timing drift (float boundaries)
+  * RTL-SDR receiver (flex_sdr) with async IQ reader
+  * Adaptive squelch for persistent-carrier repeaters
+  * Frame-synchronized TX scheduler with flex now bypass
+  * 500ms silence lead-in for receiver squelch
+  * 131 tests, zero allocation
+
+ -- Brian <brian@example.com>  Wed, 02 Apr 2026 00:00:00 +0000
+
+libflex (1.0.2-1) stable; urgency=low
 
   * Initial release.
 
