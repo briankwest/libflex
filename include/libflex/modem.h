@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include "error.h"
+#include "decoder.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -96,33 +97,39 @@ flex_err_t flex_baseband_ex(const uint8_t *bits, size_t nbits,
 
 /* ---- Demodulator ---- */
 
+#define FLEX_DEMOD_NPHASE 5   /* parallel phase offsets for timing recovery */
+
 typedef struct {
 	flex_speed_t speed;
 	float        sample_rate;
 	int          baud;
 
-	/* PLL */
-	float        phase;
-	float        phase_rate;
-	float        phase_max;
-	int          locked;
-	int          lock_count;
+	/* Symbol timing */
+	float        phase_max;     /* samples per symbol */
+	int          locked;        /* 1 = best_phase selected */
+	int          lock_count;    /* symbols evaluated since signal appeared */
+	int          best_phase;    /* index of selected phase (0..NPHASE-1) */
+
+	/* Multi-phase Goertzel timing recovery.
+	 * Three filterbanks run at evenly-spaced phase offsets.
+	 * After LOCK_THRESHOLD symbols with signal, the phase
+	 * with the highest average contrast is selected and the
+	 * others are retired. */
+	struct {
+		float gs1[4], gs2[4];   /* Goertzel accumulators */
+		float phase;            /* sample-counter for this phase */
+		float contrast_sum;     /* accumulated contrast */
+		int   eval_count;       /* symbols evaluated */
+	} ph[FLEX_DEMOD_NPHASE];
 
 	/* Frequency discriminator (quadrature delay) */
 	float        prev_i;        /* previous in-phase sample */
 	float        prev_q;        /* previous quadrature sample */
 	float        center_freq;   /* expected center frequency */
 
-	/* DC offset removal on discriminator output */
-	float        dc_offset;
-
-	/* Envelope tracking */
-	float        envelope;
-
-	/* Symbol accumulation */
+	/* Baseband demod state */
 	float        sym_accum;
 	int          sym_count;
-	int          sym_last_level;
 
 	/* Output buffer */
 	uint8_t      out_bits[16384];
@@ -151,8 +158,44 @@ flex_err_t flex_demod_feed(flex_demod_t *demod,
 flex_err_t flex_demod_baseband(flex_demod_t *demod,
                                const float *samples, size_t nsamples);
 
-/* Reset demodulator state */
+/* Reset demodulator state (full re-acquire) */
 void flex_demod_reset(flex_demod_t *demod);
+
+/* Soft reset — clear bit/Goertzel state but keep the locked
+ * phase selection.  Use between frames within one transmission. */
+void flex_demod_soft_reset(flex_demod_t *demod);
+
+/* ---- Multi-phase FSK receiver ----
+ *
+ * High-level wrapper that runs FLEX_DEMOD_NPHASE demod+decoder pairs
+ * at evenly-spaced symbol-clock offsets.  Whichever pair finds sync
+ * first is used for the remainder of that frame.  This is the proven
+ * approach for reliable decode over SDR / audio inputs where the
+ * symbol clock phase is unknown.
+ *
+ * Usage:
+ *   flex_rx_t rx;
+ *   flex_rx_init(&rx, 48000.0f, my_callback, my_ctx);
+ *   // in audio loop:
+ *   flex_rx_feed(&rx, audio, n);       // FSK tones (Goertzel)
+ *   // on squelch close:
+ *   flex_rx_flush(&rx);
+ *   // on squelch open:
+ *   flex_rx_reset(&rx);
+ */
+
+typedef struct {
+	flex_demod_t   demod[FLEX_DEMOD_NPHASE];
+	flex_decoder_t decoder[FLEX_DEMOD_NPHASE];
+	int            active;   /* locked phase, or -1 */
+} flex_rx_t;
+
+void       flex_rx_init(flex_rx_t *rx, float sample_rate,
+                        flex_msg_cb_t cb, void *user);
+void       flex_rx_reset(flex_rx_t *rx);
+void       flex_rx_flush(flex_rx_t *rx);
+flex_err_t flex_rx_feed(flex_rx_t *rx,
+                        const float *samples, size_t nsamples);
 
 /* ---- WAV file helpers ---- */
 

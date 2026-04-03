@@ -55,7 +55,10 @@ static void sighandler(int sig)
 {
 	(void)sig;
 	g_running = 0;
-	rtlsdr_cancel_async(g_dev);
+	if (g_dev)
+		rtlsdr_cancel_async(g_dev);
+	/* Wake the main thread if it's blocked on the ring condvar */
+	pthread_cond_signal(&g_ring_cond);
 }
 
 static void rtlsdr_cb(unsigned char *buf, uint32_t len, void *ctx)
@@ -193,11 +196,9 @@ int main(int argc, char **argv)
 
 	uint32_t freq_hz = (uint32_t)(freq_mhz * 1e6 + 0.5);
 
-	/* decoder + demod */
-	flex_decoder_t decoder;
-	flex_decoder_init(&decoder, on_message, NULL);
-	flex_demod_t demod;
-	flex_demod_init(&demod, (float)audio_rate);
+	/* multi-phase receiver (demod + decoder) */
+	flex_rx_t rx;
+	flex_rx_init(&rx, (float)audio_rate, on_message, NULL);
 
 	/* open SDR */
 	int count = (int)rtlsdr_get_device_count();
@@ -227,8 +228,11 @@ int main(int argc, char **argv)
 	fprintf(stderr, "Squelch: open=%d close=%d\n", sq_open_th, sq_close_th);
 	fprintf(stderr, "Listening... (Ctrl-C to stop)\n\n");
 
-	signal(SIGINT, sighandler);
-	signal(SIGTERM, sighandler);
+	struct sigaction sa = { .sa_handler = sighandler };
+	sigemptyset(&sa.sa_mask);
+	sigaction(SIGINT,  &sa, NULL);
+	sigaction(SIGTERM, &sa, NULL);
+	sigaction(SIGHUP,  &sa, NULL);
 
 	FILE *wav_fp = wav_path ? wav_open(wav_path, audio_rate) : NULL;
 	uint32_t wav_samples = 0;
@@ -344,8 +348,7 @@ int main(int argc, char **argv)
 					if (verbose)
 						fprintf(stderr, "[squelch] OPEN  rms=%d baseline=%d\n",
 						        rms, rms_baseline);
-					flex_decoder_reset(&decoder);
-					flex_demod_reset(&demod);
+					flex_rx_reset(&rx);
 				}
 			} else { sq_open_cnt = 0; }
 		} else {
@@ -362,42 +365,46 @@ int main(int argc, char **argv)
 					if (verbose)
 						fprintf(stderr, "[squelch] CLOSE rms=%d baseline=%d\n",
 						        rms, rms_baseline);
-					flex_decoder_flush(&decoder);
+					flex_rx_flush(&rx);
 				}
 			} else { sq_close_cnt = 0; }
 		}
 
 		if (sq_open) {
-			demod.out_count = 0;
-			if (use_fsk)
-				flex_demod_feed(&demod, audio_buf, (size_t)audio_pos);
-			else
-				flex_demod_baseband(&demod, audio_buf, (size_t)audio_pos);
-			if (demod.out_count > 0) {
-				flex_dec_state_t prev_state = decoder.state;
-				flex_decoder_feed_bits(&decoder, demod.out_bits, demod.out_count);
-				total_bits += (uint32_t)demod.out_count;
-				if (prev_state != FLEX_DEC_HUNTING && decoder.state == FLEX_DEC_HUNTING)
-					flex_demod_reset(&demod);
-			}
+			flex_rx_feed(&rx, audio_buf, (size_t)audio_pos);
+			total_bits += (uint32_t)audio_pos;
 		}
 
-		if (verbose && total_bits > 0 && total_bits % 5000 < 100)
+		if (verbose && total_bits > 0 && total_bits % 5000 < 100) {
+			uint32_t sf = 0, sm = 0, sc = 0, se = 0;
+			for (int p = 0; p < FLEX_DEMOD_NPHASE; p++) {
+				sf += rx.decoder[p].stat_frames;
+				sm += rx.decoder[p].stat_messages;
+				sc += rx.decoder[p].stat_corrected;
+				se += rx.decoder[p].stat_errors;
+			}
 			fprintf(stderr, "[stats] bits=%u frames=%u msgs=%u bch_ok=%u bch_err=%u rms=%d sq=%s\n",
-			        total_bits, decoder.stat_frames, decoder.stat_messages,
-			        decoder.stat_corrected, decoder.stat_errors,
+			        total_bits, sf, sm, sc, se,
 			        rms, sq_open ? "OPEN" : "closed");
+		}
 	}
 
 	rtlsdr_cancel_async(g_dev);
 	pthread_join(reader, NULL);
-	flex_decoder_flush(&decoder);
+	flex_rx_flush(&rx);
 
 	wav_close(wav_fp, wav_samples);
 	if (wav_path) fprintf(stderr, "Wrote %u samples to %s\n", wav_samples, wav_path);
 
-	fprintf(stderr, "\nStopped. bits=%u frames=%u messages=%u\n",
-	        total_bits, decoder.stat_frames, decoder.stat_messages);
+	{
+		uint32_t f = 0, m = 0;
+		for (int p = 0; p < FLEX_DEMOD_NPHASE; p++) {
+			f += rx.decoder[p].stat_frames;
+			m += rx.decoder[p].stat_messages;
+		}
+		fprintf(stderr, "\nStopped. bits=%u frames=%u messages=%u\n",
+		        total_bits, f, m);
+	}
 
 	rtlsdr_close(g_dev);
 	return 0;

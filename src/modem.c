@@ -154,11 +154,21 @@ done:
  * Demodulator
  * ================================================================ */
 
-#define DC_ALPHA       0.001f
-#define ENV_ALPHA      0.02f
-#define PLL_LOCKED_R   0.045f
-#define PLL_UNLOCKED_R 0.050f
-#define LOCK_THRESHOLD 24
+#define LOCK_THRESHOLD 24      /* symbols with signal before phase lock */
+#define PLL_LOCKED_R   0.045f  /* baseband PLL gain when locked */
+#define PLL_UNLOCKED_R 0.050f  /* baseband PLL gain when unlocked */
+
+static void demod_init_phases(flex_demod_t *demod)
+{
+	for (int p = 0; p < FLEX_DEMOD_NPHASE; p++) {
+		memset(&demod->ph[p], 0, sizeof(demod->ph[0]));
+		demod->ph[p].phase = (float)p * demod->phase_max
+		                     / (float)FLEX_DEMOD_NPHASE;
+	}
+	demod->best_phase = 0;
+	demod->locked = 0;
+	demod->lock_count = 0;
+}
 
 void flex_demod_init(flex_demod_t *demod, float sample_rate)
 {
@@ -166,9 +176,11 @@ void flex_demod_init(flex_demod_t *demod, float sample_rate)
 	demod->sample_rate = sample_rate > 0 ? sample_rate : FLEX_MODEM_SAMPLE_RATE;
 	demod->baud = 1600;
 	float dev, inner;
-	compute_baseband_freqs(demod->sample_rate, demod->baud, flex_speed_is_4fsk(demod->speed), &demod->center_freq, &dev, &inner);
+	compute_baseband_freqs(demod->sample_rate, demod->baud,
+	                       flex_speed_is_4fsk(demod->speed),
+	                       &demod->center_freq, &dev, &inner);
 	demod->phase_max = demod->sample_rate / (float)demod->baud;
-	demod->phase = 0.0f;
+	demod_init_phases(demod);
 }
 
 void flex_demod_init_speed(flex_demod_t *demod, float sample_rate,
@@ -179,9 +191,11 @@ void flex_demod_init_speed(flex_demod_t *demod, float sample_rate,
 	demod->speed = speed;
 	demod->baud = speed_to_baud(speed);
 	float dev, inner;
-	compute_baseband_freqs(demod->sample_rate, demod->baud, flex_speed_is_4fsk(demod->speed), &demod->center_freq, &dev, &inner);
+	compute_baseband_freqs(demod->sample_rate, demod->baud,
+	                       flex_speed_is_4fsk(demod->speed),
+	                       &demod->center_freq, &dev, &inner);
 	demod->phase_max = demod->sample_rate / (float)demod->baud;
-	demod->phase = 0.0f;
+	demod_init_phases(demod);
 }
 
 void flex_demod_reset(flex_demod_t *demod)
@@ -190,18 +204,41 @@ void flex_demod_reset(flex_demod_t *demod)
 	flex_demod_init(demod, sr);
 }
 
+void flex_demod_soft_reset(flex_demod_t *demod)
+{
+	/* Clear Goertzel / output / lock state but keep the phase
+	 * counters running so the three offsets stay evenly spaced.
+	 * Each new frame re-acquires the best phase from its preamble. */
+	for (int p = 0; p < FLEX_DEMOD_NPHASE; p++) {
+		for (int t = 0; t < 4; t++) {
+			demod->ph[p].gs1[t] = 0;
+			demod->ph[p].gs2[t] = 0;
+		}
+		demod->ph[p].contrast_sum = 0;
+		demod->ph[p].eval_count = 0;
+	}
+	demod->locked = 0;
+	demod->lock_count = 0;
+	demod->best_phase = 0;
+	demod->out_count = 0;
+	demod->sym_accum = 0;
+	demod->sym_count = 0;
+}
+
 /*
- * Goertzel-based FSK demodulator.
+ * Goertzel-based FSK demodulator with multi-phase timing recovery.
+ *
+ * Three Goertzel filterbanks run in parallel at evenly-spaced phase
+ * offsets (0, phase_max/3, 2·phase_max/3).  During the first
+ * LOCK_THRESHOLD symbol evaluations the average contrast of each
+ * phase is tracked.  The phase with the highest average contrast
+ * is selected and the others are retired.  Before lock, bits are
+ * emitted from phase 0 (a few preamble bits may be wrong — the
+ * sync marker is hundreds of bits later and will use the correct
+ * phase).
  *
  * 2-FSK: Goertzel at mark (+dev) and space (-dev) frequencies.
- *        Outputs 1 bit per symbol.
- *
- * 4-FSK: Goertzel at all 4 tone frequencies:
- *        sym 0: -4800 Hz  (space outer)
- *        sym 1: -1600 Hz  (space inner)
- *        sym 2: +1600 Hz  (mark inner)
- *        sym 3: +4800 Hz  (mark outer)
- *        Outputs 2 bits per symbol (matching encoder bit-pair packing).
+ * 4-FSK: Goertzel at 4 tones; outputs 2 bits per symbol.
  */
 
 flex_err_t flex_demod_feed(flex_demod_t *demod,
@@ -212,9 +249,9 @@ flex_err_t flex_demod_feed(flex_demod_t *demod,
 
 	int is_4fsk = flex_speed_is_4fsk(demod->speed);
 
-	/* compute adaptive baseband frequencies matching the modulator */
 	float center, dev, inner;
-	compute_baseband_freqs(demod->sample_rate, demod->baud, flex_speed_is_4fsk(demod->speed), &center, &dev, &inner);
+	compute_baseband_freqs(demod->sample_rate, demod->baud,
+	                       is_4fsk, &center, &dev, &inner);
 
 	float freq[4];
 	int ntones;
@@ -234,59 +271,93 @@ flex_err_t flex_demod_feed(flex_demod_t *demod,
 		ntones = 2;
 	}
 
-	/* Goertzel coefficients */
 	float w[4];
 	for (int i = 0; i < ntones; i++)
-		w[i] = 2.0f * cosf(2.0f * (float)M_PI * freq[i] / demod->sample_rate);
-
-	/* Goertzel state per tone: s1, s2 */
-	float gs1[4] = {0}, gs2[4] = {0};
+		w[i] = 2.0f * cosf(2.0f * (float)M_PI * freq[i]
+		                    / demod->sample_rate);
 
 	for (size_t n = 0; n < nsamples; n++) {
 		float s = samples[n];
 
-		/* Goertzel iteration for each tone */
-		for (int t = 0; t < ntones; t++) {
-			float s0 = s + w[t] * gs1[t] - gs2[t];
-			gs2[t] = gs1[t];
-			gs1[t] = s0;
-		}
+		/* Accumulate Goertzel for every phase */
+		for (int p = 0; p < FLEX_DEMOD_NPHASE; p++) {
+			/* Skip retired phases once locked */
+			if (demod->locked && p != demod->best_phase)
+				continue;
 
-		demod->phase += 1.0f;
-
-		/* symbol boundary */
-		if (demod->phase >= demod->phase_max) {
-			demod->phase -= demod->phase_max;
-
-			/* compute power at each tone */
-			float pwr[4];
-			for (int t = 0; t < ntones; t++)
-				pwr[t] = gs1[t]*gs1[t] + gs2[t]*gs2[t] - w[t]*gs1[t]*gs2[t];
-
-			if (is_4fsk) {
-				/* find strongest tone → symbol 0-3 */
-				int best = 0;
-				for (int t = 1; t < 4; t++)
-					if (pwr[t] > pwr[best]) best = t;
-
-				/* output 2 bits matching encoder packing:
-				 * symbol = ((bits[i] & 1) << 1) | (bits[i+1] & 1)
-				 * so bit0 = (symbol >> 1) & 1, bit1 = symbol & 1 */
-				if (demod->out_count + 1 < sizeof(demod->out_bits)) {
-					demod->out_bits[demod->out_count++] = (best >> 1) & 1;
-					demod->out_bits[demod->out_count++] = best & 1;
-				}
-			} else {
-				/* 2-FSK: space=tone[0], mark=tone[1] */
-				int bit = (pwr[1] > pwr[0]) ? 1 : 0;
-				if (demod->out_count < sizeof(demod->out_bits))
-					demod->out_bits[demod->out_count++] = (uint8_t)bit;
+			for (int t = 0; t < ntones; t++) {
+				float s0 = s + w[t] * demod->ph[p].gs1[t]
+				              - demod->ph[p].gs2[t];
+				demod->ph[p].gs2[t] = demod->ph[p].gs1[t];
+				demod->ph[p].gs1[t] = s0;
 			}
 
-			/* reset Goertzel state */
-			for (int t = 0; t < ntones; t++) {
-				gs1[t] = 0.0f;
-				gs2[t] = 0.0f;
+			demod->ph[p].phase += 1.0f;
+
+			if (demod->ph[p].phase >= demod->phase_max) {
+				demod->ph[p].phase -= demod->phase_max;
+
+				/* power at each tone */
+				float pwr[4];
+				float total_pwr = 1e-10f, max_pwr = 0;
+				for (int t = 0; t < ntones; t++) {
+					pwr[t] = demod->ph[p].gs1[t] * demod->ph[p].gs1[t]
+					        + demod->ph[p].gs2[t] * demod->ph[p].gs2[t]
+					        - w[t] * demod->ph[p].gs1[t]
+					              * demod->ph[p].gs2[t];
+					total_pwr += pwr[t];
+					if (pwr[t] > max_pwr) max_pwr = pwr[t];
+				}
+
+				/* contrast for phase selection — only count
+				 * symbols with real signal (skip silence) */
+				float contrast = max_pwr / total_pwr;
+				if (contrast > 0.3f) {
+					demod->ph[p].contrast_sum += contrast;
+					demod->ph[p].eval_count++;
+				}
+
+				/* emit bits only from the selected phase */
+				if (p == demod->best_phase) {
+					if (is_4fsk) {
+						int best = 0;
+						for (int t = 1; t < 4; t++)
+							if (pwr[t] > pwr[best]) best = t;
+						if (demod->out_count + 1 < sizeof(demod->out_bits)) {
+							demod->out_bits[demod->out_count++] = (best >> 1) & 1;
+							demod->out_bits[demod->out_count++] = best & 1;
+						}
+					} else {
+						int bit = (pwr[1] > pwr[0]) ? 1 : 0;
+						if (demod->out_count < sizeof(demod->out_bits))
+							demod->out_bits[demod->out_count++] = (uint8_t)bit;
+					}
+				}
+
+				/* reset Goertzel for this phase */
+				for (int t = 0; t < ntones; t++) {
+					demod->ph[p].gs1[t] = 0;
+					demod->ph[p].gs2[t] = 0;
+				}
+
+				/* ── phase selection ── */
+				if (!demod->locked &&
+				    demod->ph[0].eval_count >= LOCK_THRESHOLD) {
+					int bp = 0;
+					float best_avg = 0;
+					for (int q = 0; q < FLEX_DEMOD_NPHASE; q++) {
+						float avg = demod->ph[q].eval_count > 0
+						          ? demod->ph[q].contrast_sum
+						            / (float)demod->ph[q].eval_count
+						          : 0;
+						if (avg > best_avg) {
+							best_avg = avg;
+							bp = q;
+						}
+					}
+					demod->best_phase = bp;
+					demod->locked = 1;
+				}
 			}
 		}
 	}
@@ -295,15 +366,11 @@ flex_err_t flex_demod_feed(flex_demod_t *demod,
 }
 
 /*
- * Baseband (FM discriminator output) demodulator.
+ * Baseband (FM discriminator output) demodulator with zero-crossing PLL.
  *
- * Input is post-discriminator audio: positive = higher frequency (mark),
- * negative = lower frequency (space).  This is what comes out of an FM
- * receiver's discriminator or an SDR FM demod chain.
- *
- * 2-FSK: accumulate sample level over symbol period, slice at zero.
- * The decoder handles sync detection and speed auto-detection from
- * the recovered bit stream.
+ * Uses ph[0] for symbol timing.  Zero crossings in the NRZ signal
+ * correspond to symbol transitions; the PLL nudges the phase so
+ * crossings land at symbol boundaries (phase ≈ 0).
  */
 flex_err_t flex_demod_baseband(flex_demod_t *demod,
                                const float *samples, size_t nsamples)
@@ -311,26 +378,34 @@ flex_err_t flex_demod_baseband(flex_demod_t *demod,
 	if (!demod || !samples)
 		return FLEX_ERR_PARAM;
 
+	float *phase = &demod->ph[0].phase;
+
 	for (size_t i = 0; i < nsamples; i++) {
 		float s = samples[i];
 
-		/* accumulate sample level over symbol period */
+		/* zero-crossing PLL */
+		int sign      = (s >= 0.0f) ? 1 : 0;
+		int prev_sign = (demod->prev_i >= 0.0f) ? 1 : 0;
+		if (sign != prev_sign) {
+			float err = *phase / demod->phase_max;
+			if (err > 0.5f) err -= 1.0f;
+			float gain = demod->locked ? PLL_LOCKED_R : PLL_UNLOCKED_R;
+			*phase -= err * gain * demod->phase_max;
+			while (*phase < 0)        *phase += demod->phase_max;
+			while (*phase >= demod->phase_max) *phase -= demod->phase_max;
+		}
+		demod->prev_i = s;
+
 		demod->sym_accum += s;
 		demod->sym_count++;
+		*phase += 1.0f;
 
-		/* advance symbol clock */
-		demod->phase += 1.0f;
-
-		/* symbol boundary */
-		if (demod->phase >= demod->phase_max) {
-			demod->phase -= demod->phase_max;
+		if (*phase >= demod->phase_max) {
+			*phase -= demod->phase_max;
 
 			if (demod->sym_count > 0) {
 				float avg = demod->sym_accum / (float)demod->sym_count;
-
-				/* 2-FSK: positive = bit 1, negative = bit 0 */
 				int bit = (avg > 0) ? 1 : 0;
-
 				if (demod->out_count < sizeof(demod->out_bits))
 					demod->out_bits[demod->out_count++] = (uint8_t)bit;
 			}
@@ -340,6 +415,87 @@ flex_err_t flex_demod_baseband(flex_demod_t *demod,
 		}
 	}
 
+	return FLEX_OK;
+}
+
+/* ================================================================
+ * Multi-phase FSK receiver
+ * ================================================================ */
+
+void flex_rx_init(flex_rx_t *rx, float sample_rate,
+                  flex_msg_cb_t cb, void *user)
+{
+	memset(rx, 0, sizeof(*rx));
+	rx->active = -1;
+	for (int p = 0; p < FLEX_DEMOD_NPHASE; p++) {
+		flex_demod_init(&rx->demod[p], sample_rate);
+		/* Each demod uses ONE unique phase offset.  Set all
+		 * internal phases to the same value and pre-lock to
+		 * ph[0] so only that Goertzel bank runs. */
+		float offset = (float)p * rx->demod[p].phase_max
+		               / (float)FLEX_DEMOD_NPHASE;
+		for (int q = 0; q < FLEX_DEMOD_NPHASE; q++)
+			rx->demod[p].ph[q].phase = offset;
+		rx->demod[p].locked = 1;
+		rx->demod[p].best_phase = 0;
+		flex_decoder_init(&rx->decoder[p], cb, user);
+	}
+}
+
+void flex_rx_reset(flex_rx_t *rx)
+{
+	float sr    = rx->demod[0].sample_rate;
+	flex_msg_cb_t cb = rx->decoder[0].callback;
+	void       *user = rx->decoder[0].user;
+	flex_rx_init(rx, sr, cb, user);
+}
+
+void flex_rx_flush(flex_rx_t *rx)
+{
+	for (int p = 0; p < FLEX_DEMOD_NPHASE; p++)
+		flex_decoder_flush(&rx->decoder[p]);
+	rx->active = -1;
+}
+
+flex_err_t flex_rx_feed(flex_rx_t *rx,
+                        const float *samples, size_t nsamples)
+{
+	if (!rx || !samples)
+		return FLEX_ERR_PARAM;
+
+	for (int p = 0; p < FLEX_DEMOD_NPHASE; p++) {
+		if (rx->active >= 0 && p != rx->active)
+			continue;
+
+		rx->demod[p].out_count = 0;
+		flex_demod_feed(&rx->demod[p], samples, nsamples);
+
+		if (rx->demod[p].out_count > 0) {
+			flex_dec_state_t prev = rx->decoder[p].state;
+			flex_decoder_feed_bits(&rx->decoder[p],
+			                       rx->demod[p].out_bits,
+			                       rx->demod[p].out_count);
+
+			/* Lock to first phase that finds sync */
+			if (rx->active < 0 &&
+			    prev == FLEX_DEC_HUNTING &&
+			    rx->decoder[p].state != FLEX_DEC_HUNTING)
+				rx->active = p;
+
+			/* Frame done — clear Goertzel state, unlock
+			 * rx for next frame but keep demod phase. */
+			if (prev != FLEX_DEC_HUNTING &&
+			    rx->decoder[p].state == FLEX_DEC_HUNTING) {
+				for (int t = 0; t < 4; t++) {
+					rx->demod[p].ph[0].gs1[t] = 0;
+					rx->demod[p].ph[0].gs2[t] = 0;
+				}
+				rx->demod[p].out_count = 0;
+				if (p == rx->active)
+					rx->active = -1;
+			}
+		}
+	}
 	return FLEX_OK;
 }
 
