@@ -19,19 +19,21 @@
 #include <math.h>
 #include <termios.h>
 #include <sys/ioctl.h>
+#include <linux/hidraw.h>
 #include <portaudio.h>
 #include <libflex/flex.h>
 #include <libflex/modem.h>
 
 #define SAMPLE_RATE   48000
-#define TX_DELAY_MS   500     /* PTT-to-audio delay (radio ramp-up) */
+#define TX_DELAY_MS   1500    /* PTT-to-audio delay (radio ramp-up) */
 #define TX_TAIL_MS    500     /* extra hold after audio drain */
 
-/* ── Serial DTR PTT ── */
+/* ── PTT control ── */
 
-static int ptt_open(const char *serial_path)
+/* Serial DTR PTT (e.g. /dev/ttyUSB0) */
+static int serial_ptt_open(const char *path)
 {
-	int fd = open(serial_path, O_RDWR | O_NOCTTY | O_NONBLOCK);
+	int fd = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK);
 	if (fd < 0) return -1;
 
 	struct termios tio;
@@ -46,11 +48,49 @@ static int ptt_open(const char *serial_path)
 	return fd;
 }
 
-static int ptt_set(int fd, int on)
+static int serial_ptt_set(int fd, int on)
 {
 	if (fd < 0) return -1;
 	int bits = TIOCM_DTR;
 	return ioctl(fd, on ? TIOCMBIS : TIOCMBIC, &bits);
+}
+
+/* CM108/AIOC HID GPIO PTT (e.g. /dev/hidraw0)
+ * AIOC uses GPIO2 (bit 2, 0x04) for PTT via HID output report. */
+#define AIOC_PTT_GPIO  0x04    /* GPIO2 */
+
+static int cm108_ptt_open(const char *path)
+{
+	return open(path, O_WRONLY);
+}
+
+static int cm108_ptt_set(int fd, int on)
+{
+	if (fd < 0) return -1;
+	uint8_t buf[5] = {
+		0x00,                                   /* HID report ID */
+		0x00,                                   /* reserved */
+		on ? AIOC_PTT_GPIO : 0x00,             /* GPIO direction: output / input */
+		on ? AIOC_PTT_GPIO : 0x00,             /* GPIO data */
+		0x00                                    /* reserved */
+	};
+	return write(fd, buf, sizeof(buf)) == sizeof(buf) ? 0 : -1;
+}
+
+/* auto-detect PTT type from path */
+static int is_hidraw(const char *path)
+{
+	return strstr(path, "hidraw") != NULL;
+}
+
+static int ptt_open(const char *path)
+{
+	return is_hidraw(path) ? cm108_ptt_open(path) : serial_ptt_open(path);
+}
+
+static int ptt_set(const char *path, int fd, int on)
+{
+	return is_hidraw(path) ? cm108_ptt_set(fd, on) : serial_ptt_set(fd, on);
 }
 
 /* ── PortAudio playback ── */
@@ -144,9 +184,10 @@ static void usage(const char *prog)
 	    "  -n digits     Numeric message\n"
 	    "  -t            Tone-only page\n"
 	    "  -s speed      1600 (default), 3200, 3200-4, 6400\n"
-	    "  -D device     PortAudio device name substring (default: AllInOne)\n"
-	    "  -P port       Serial port for DTR PTT (default: /dev/ttyACM0)\n"
-	    "  -l level      Audio level 0.0-1.0 (default: 0.5)\n"
+	    "  -D device     PortAudio device name substring (default: All-In-One)\n"
+	    "  -P port       PTT device: /dev/hidrawN for AIOC/CM108,\n"
+	    "                /dev/ttyXXX for serial DTR (default: /dev/hidraw1)\n"
+	    "  -l level      Audio level 0.0-1.0 (default: 0.15)\n"
 	    "  -d ms         TX delay in ms (default: %d)\n"
 	    "  -v            Verbose\n",
 	    prog, TX_DELAY_MS);
@@ -160,9 +201,9 @@ int main(int argc, char **argv)
 	const char *num_msg = NULL;
 	int      tone_only = 0;
 	flex_speed_t speed = FLEX_SPEED_1600_2;
-	const char *audio_dev = "AllInOne";
-	const char *ptt_port = "/dev/ttyACM0";
-	float    level = 0.5f;
+	const char *audio_dev = "All-In-One";
+	const char *ptt_port = "/dev/hidraw1";
+	float    level = 0.15f;
 	int      tx_delay = TX_DELAY_MS;
 	int      verbose = 0;
 
@@ -270,8 +311,9 @@ int main(int argc, char **argv)
 		        ptt_port);
 	}
 
-	if (verbose) fprintf(stderr, "PTT ON\n");
-	ptt_set(ptt_fd, 1);
+	if (verbose) fprintf(stderr, "PTT ON (%s)\n",
+	                     is_hidraw(ptt_port) ? "HID GPIO" : "serial DTR");
+	ptt_set(ptt_port, ptt_fd, 1);
 	usleep((unsigned)(tx_delay * 1000));
 
 	/* ── play audio ── */
@@ -283,7 +325,7 @@ int main(int argc, char **argv)
 	usleep(TX_TAIL_MS * 1000);
 
 	/* ── PTT off ── */
-	ptt_set(ptt_fd, 0);
+	ptt_set(ptt_port, ptt_fd, 0);
 	if (verbose) fprintf(stderr, "PTT OFF\n");
 
 	if (ptt_fd >= 0) close(ptt_fd);
