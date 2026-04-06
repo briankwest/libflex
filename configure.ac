@@ -1,5 +1,5 @@
 AC_PREREQ([2.69])
-AC_INIT([libflex], [1.0.2], [https://github.com/briankwest/libflex/issues])
+AC_INIT([libflex], [1.0.3], [https://github.com/briankwest/libflex/issues])
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CONFIG_MACRO_DIRS([m4])
 AM_INIT_AUTOMAKE([foreign subdir-objects -Wall])
