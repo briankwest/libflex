@@ -40,6 +40,7 @@ gen_baseband_CFLAGS = \
 	$(AM_CFLAGS)
 gen_baseband_LDADD = $(top_builddir)/src/libflex.la
 
+if HAVE_PORTAUDIO
 noinst_PROGRAMS += flex_tx
 flex_tx_SOURCES = flex_tx.c
 flex_tx_CFLAGS = \
@@ -48,6 +49,7 @@ flex_tx_CFLAGS = \
 	-I$(top_srcdir)/include \
 	$(AM_CFLAGS)
 flex_tx_LDADD = $(top_builddir)/src/libflex.la -lportaudio -lm
+endif
 
 if HAVE_RTLSDR
 noinst_PROGRAMS += flex_sdr

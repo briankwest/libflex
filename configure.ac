@@ -1,5 +1,5 @@
 AC_PREREQ([2.69])
-AC_INIT([libflex], [1.0.3], [https://github.com/briankwest/libflex/issues])
+AC_INIT([libflex], [1.0.4], [https://github.com/briankwest/libflex/issues])
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CONFIG_MACRO_DIRS([m4])
 AM_INIT_AUTOMAKE([foreign subdir-objects -Wall])
@@ -14,6 +14,9 @@ AC_PROG_INSTALL
 
 PKG_CHECK_MODULES([RTLSDR], [librtlsdr], [have_rtlsdr=yes], [have_rtlsdr=no])
 AM_CONDITIONAL([HAVE_RTLSDR], [test "x$have_rtlsdr" = "xyes"])
+
+PKG_CHECK_MODULES([PORTAUDIO], [portaudio-2], [have_portaudio=yes], [have_portaudio=no])
+AM_CONDITIONAL([HAVE_PORTAUDIO], [test "x$have_portaudio" = "xyes"])
 
 AC_CONFIG_HEADERS([config.h])
 
