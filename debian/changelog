@@ -8,10 +8,10 @@ libflex (1.0.2-1) stable; urgency=low
   * 500ms silence lead-in for receiver squelch
   * 131 tests, zero allocation
 
- -- Brian <brian@mcalester.net>  Wed, 02 Apr 2026 00:00:00 +0000
+ -- Brian <brian@kerchunk.net>  Wed, 02 Apr 2026 00:00:00 +0000
 
 libflex (1.0.2-1) stable; urgency=low
 
   * Initial release.
 
- -- Brian <brian@mcalester.net>  Mon, 30 Mar 2026 00:00:00 +0000
+ -- Brian <brian@kerchunk.net>  Mon, 30 Mar 2026 00:00:00 +0000
