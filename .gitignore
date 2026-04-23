@@ -27,12 +27,17 @@ Makefile
 Makefile.in
 */Makefile
 */Makefile.in
+configure~
 
 libflex.pc
 
 test_libflex
 encode_page
 decode_stream
+examples/decode_wav
+examples/encode_wav
+examples/flex_sdr
+examples/gen_baseband
 
 *.tar.gz
 *.tar.xz
